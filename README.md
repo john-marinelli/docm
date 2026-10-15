@@ -78,6 +78,13 @@ Accepted units are `px`, `pt`, `mm`, `cm` or `in`. You can also use
 
 Fonts can be `sans`, `mono` or a declared font under `[font]`. 
 
+### Variables
+
+There are four variables that can be used in the header and footer:
+`{{page}}`, `{{pages}}`, `{{filename}}`, and `{{title}}`. These are
+the current page number, total pages, file name and first heading `#`
+respectively.
+
 ### Options
 
 ```toml
@@ -213,14 +220,14 @@ height = "8mm"
 [footer]
 enabled = true
 left = ""
-center = "{{page}} / {{pages}}"
+center = "{{page}} / {{pages}}" # Example of using templated vars
 right = ""
 font = "sans"
 font_size = "9pt"
 font_weight = 400
 font_style = "normal"
 line_height = 1.25
-color = "#6B7280"
+color = "#FFFFFF"
 logo = false                    # False if not using a logo
 ```
 
