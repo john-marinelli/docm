@@ -61,7 +61,7 @@ rendering.
 ## Document formatting outside of toml configuration
 
 There is limited control over how documents are rendered outside 
-of a config file frontmatter, but you can use `:::pagebreak` to force
+of a config file or frontmatter, but you can use `:::pagebreak` to force
 a page break, and of course $ $ for inline latex, $$ $$ for standalone
 latex, code blocks in triple back ticks with syntax highlighting, and
 mermaid blocks in triple backticks with `mermaid`
