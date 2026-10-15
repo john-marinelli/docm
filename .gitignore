@@ -1,0 +1,31 @@
+# Dependencies and generated outputs
+node_modules/
+out/
+dist/
+.build/
+/.formula-build/
+/.formula-store/
+/.formula-electron/
+/.formula-mise-cache/
+/.formula-mise-state/
+/.formula-empty-config.toml
+
+# Local configuration and environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+mise.local.toml
+mise.*.local.toml
+.mise.local.toml
+.mise.*.local.toml
+
+# Logs and test artifacts
+*.log
+coverage/
+test-results/
+playwright-report/
+
+# macOS metadata
+.DS_Store
+._*

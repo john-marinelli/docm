@@ -1,0 +1,52 @@
+import type { ConfigInput } from './schema.js';
+
+/** Merge inputs deliberately omit inherited typography; finalizeConfig resolves it after all layers. */
+export const defaults = {
+  page: {
+    size: 'A4',
+    orientation: 'portrait',
+    margins: { top: '20mm', bottom: '20mm', left: '20mm', right: '20mm' },
+  },
+  document: { toc: false, number_headings: false },
+  fonts: {},
+  body: {
+    font: 'sans', font_size: '11pt', font_weight: 400, font_style: 'normal',
+    text_align: 'left', line_height: 1.5, color: '#202124', background: '#FFFFFF',
+  },
+  headings: {
+    h1: { font: 'sans', font_size: '24pt', font_weight: 600, line_height: 1.25, space_before: '14pt', space_after: '6pt' },
+    h2: { font: 'sans', font_size: '18pt', font_weight: 600, line_height: 1.25, space_before: '14pt', space_after: '6pt' },
+    h3: { font: 'sans', font_size: '14pt', font_weight: 600, line_height: 1.25, space_before: '14pt', space_after: '6pt' },
+    h4: { font: 'sans', font_size: '12pt', font_weight: 600, line_height: 1.25, space_before: '14pt', space_after: '6pt' },
+    h5: { font: 'sans', font_size: '11pt', font_weight: 600, line_height: 1.25, space_before: '14pt', space_after: '6pt' },
+    h6: { font: 'sans', font_size: '11pt', font_weight: 600, line_height: 1.25, space_before: '14pt', space_after: '6pt' },
+  },
+  paragraph: { space_after: '8pt' },
+  link: { color: '#2563EB', underline: true },
+  list: { space_after: '8pt', indent: '18pt' },
+  table: {
+    font_size: '10pt', padding: '5pt', border_width: '0.5pt', border_color: '#D1D5DB',
+    header_background: '#F3F4F6', stripe_background: 'transparent',
+  },
+  blockquote: { border_width: '3pt', padding: '8pt', background: '#F8FAFC' },
+  inline_code: { font: 'mono', font_size: '9.5pt', background: '#F3F4F6' },
+  code: {
+    font: 'mono', font_size: '9pt', line_height: 1.4, padding: '8pt', background: '#F3F4F6',
+    theme: 'github-light', wrap: true, line_numbers: false,
+  },
+  math: { font_size: '11pt', color: '#202124', space_before: '8pt', space_after: '8pt', macros: {} },
+  mermaid: { font_size: '11pt', space_before: '8pt', space_after: '8pt', theme: 'neutral' },
+  image: { space_before: '8pt', space_after: '8pt', align: 'center' },
+  footnotes: { font_size: '9pt' },
+  rule: { border_width: '0.5pt', border_color: '#D1D5DB' },
+  header: {
+    enabled: true, left: '', center: '', right: '',
+    font: 'sans', font_size: '9pt', font_weight: 400, font_style: 'normal',
+    line_height: 1.25, color: '#6B7280', logo: false,
+  },
+  footer: {
+    enabled: true, left: '', center: '{{page}} / {{pages}}', right: '',
+    font: 'sans', font_size: '9pt', font_weight: 400, font_style: 'normal',
+    line_height: 1.25, color: '#6B7280', logo: false,
+  },
+} satisfies ConfigInput;

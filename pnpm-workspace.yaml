@@ -1,0 +1,5 @@
+verifyDepsBeforeRun: false
+allowBuilds:
+  electron: true
+  esbuild: true
+  electron-winstaller: false

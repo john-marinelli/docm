@@ -1,0 +1,36 @@
+[tools]
+node = "26.10.0"
+pnpm = "12.10.1"
+
+[tasks.dev]
+run = "pnpm run dev"
+[tasks.build]
+run = "pnpm run build"
+[tasks.typecheck]
+run = "pnpm run typecheck"
+[tasks.test]
+run = "pnpm run test"
+[tasks."notices:prepare"]
+run = "pnpm run notices:prepare"
+[tasks.package]
+depends = ["build", "notices:prepare"]
+run = "pnpm run package"
+[tasks.smoke]
+depends = ["build"]
+run = "pnpm run smoke"
+[tasks."package:smoke"]
+run = "pnpm run package:smoke"
+[tasks."formula:build"]
+run = "pnpm run formula:build"
+[tasks."formula:prepare"]
+run = "pnpm run formula:prepare"
+[tasks."formula:install"]
+depends = ["formula:prepare"]
+run = "pnpm run formula:install"
+[tasks."formula:refresh"]
+run = "pnpm run formula:refresh"
+[tasks."formula:smoke"]
+run = "pnpm run formula:smoke"
+
+[tasks."bootstrap:electron"]
+run = "pnpm exec install-electron"

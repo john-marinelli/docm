@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+launcher=$0
+case $launcher in
+  */*) ;;
+  *) launcher=$(command -v "$launcher") ;;
+esac
+case $launcher in
+  /*) ;;
+  *) launcher=$PWD/$launcher ;;
+esac
+
+# Resolve each link relative to its own directory, not the invocation cwd.
+while :; do
+  directory=$(CDPATH= cd -P "${launcher%/*}/." && pwd -P)
+  launcher=$directory/${launcher##*/}
+  [ -L "$launcher" ] || break
+  target=$(/usr/bin/readlink "$launcher")
+  case $target in
+    /*) launcher=$target ;;
+    *) launcher=$directory/$target ;;
+  esac
+done
+
+app=$(CDPATH= cd -P "$directory/../../.." && pwd -P)
+unset ELECTRON_RUN_AS_NODE
+exec "$app/Contents/MacOS/docm" --cli "$@"
