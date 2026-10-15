@@ -6,6 +6,8 @@ was provided, but the implementation was left up to an agent.
 The LLM-generated readme is at [LLM_README.md](./LLM_README.md),
 this one is entirely written by me.
 
+![Demo gif showing live rendering](./assets/demo.gif)
+
 This is docm, a simple program that can live(ish)-render a markdown
 file and export it to pdf.
 
