@@ -41,6 +41,7 @@ which has so far been more than enough.
 ### Render
 
 `docm r <filepath>.md` (outputs to `<filepath>.pdf`)
+
 `docm r <filepath>.md -o <outputpath>.pdf`
 
 ### Configure
