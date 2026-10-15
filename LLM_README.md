@@ -1,141 +1,89 @@
-# docm
+# docm: implementation overview
 
-macOS arm64 Markdown-to-PDF application. Preview displays the generated PDF bytes, not a second HTML layout. Version 0.1.0; private unsigned distribution.
+docm is an offline Markdown-to-PDF application for macOS arm64. Its central decision is **PDF-first preview**: the window displays generated PDF bytes, not a separate HTML approximation. Electron supplies Chromium's layout/printing engine and desktop integration; the tradeoff is a bundled browser runtime and a large application for a small feature set.
 
-## Usage
+## Architecture
 
-```sh
-docm notes.md
-docm r notes.md
-docm r notes.md -o report.pdf
-docm r notes.md -o -
-docm notes.md --config shared-report.toml
-docm -- r
+```mermaid
+flowchart TD
+    A[Markdown + layered TOML + local assets] --> B[Main process: parsing, highlighting, assets, math]
+    B --> C[Hidden print renderer: fonts, Mermaid, SVG, layout]
+    C --> D[Chromium printToPDF]
+    D --> E[PDF validation]
+    E --> F[PDF.js preview]
+    E --> G[File or stdout]
 ```
 
-Preview owns a terminal-attached window until it closes; Ctrl-C quits with exit 130. Separate invocations own separate windows. Rendering writes beside the source by default, or to the invocation-relative `-o` path; `-o -` emits only PDF bytes. Existing output is replaced atomically after success. The destination parent must exist, and source/config/assets cannot be overwritten. CLI syntax errors exit 2; render/config/asset/write errors exit 1.
+[`src/main/index.ts`](src/main/index.ts) coordinates preview, one-shot rendering, native dialogs, and shutdown. `docm notes.md` owns a terminal-attached window; separate invocations are independent. `docm r notes.md [-o report.pdf]` renders once without opening a preview. `-o -` reserves stdout for PDF bytes; diagnostics go to stderr. Finder launch opens a Markdown picker and uses the selected document's directory for theme discovery.
 
-Preview offers continuous pages, selectable text and links, zoom, fit-width/fit-page, and Export PDF (also Cmd-S). It watches the source, automatic/explicit themes, and referenced images/fonts/logos. Failed edits retain the last good PDF with a stale diagnostic; repairs recover automatically. Export waits for the newest successful dependency snapshot and refuses stale output. Cancel does not write anything. Finder launch opens a Markdown picker and discovers the selected document's parent-directory theme.
+The shell [launcher](bin/docm) resolves its symlinks and `exec`s the bundled app, preserving the invocation directory, arguments, signals, and exit status without needing developer Node on PATH. Commander handles CLI parsing. Exit codes are 0 for success, 1 for rendering/configuration/I/O failure, 2 for invalid arguments, and 130 for Ctrl-C.
 
-## Configuration
+## Content preparation
 
-Settings merge recursively: defaults → `~/Library/Application Support/docm/theme.toml` → invocation-directory `theme.toml` → `--config` → document TOML frontmatter. Every layer is strictly validated, including values subsequently overridden. Relative font/logo paths belong to the file declaring them. Automatic themes are optional; an explicit config is required.
+[`src/render/markdown.ts`](src/render/markdown.ts) uses unified/remark to parse CommonMark, GFM tables/tasks/footnotes, and math into an AST, then rehype to serialize generated HTML. AST processing preserves source positions and separates syntax from literal code.
 
-```markdown
-+++
-[body]
-font_size = "11pt"
-[header]
-center = "{{title}}"
-[footer]
-center = "{{page}} / {{pages}}"
-+++
-# Technical notes
-```
+- **Code and structure:** Shiki highlights bundled languages; unknown languages remain escaped, unhighlighted code. Unique heading IDs support links, optional numbering, and a linked contents block. A custom standalone `:::pagebreak` construct respects code/math literals and avoids empty pages from leading/trailing/repeated breaks.
+- **Authored HTML and links:** raw HTML is escaped rather than executed; arbitrary document CSS is not exposed. HTTP(S)/mailto links remain links without fetching their targets. Unsupported link schemes lose their target.
+- **Local assets:** [`assets.ts`](src/render/assets.ts) reads, validates, and embeds PNG/JPEG/WebP/GIF/SVG images and font files. Image paths belong to the Markdown file; font/logo paths belong to the configuration file declaring them. Remote image URLs are rejected.
 
-A4 portrait, 20 mm margins, Source Sans 3 prose, Source Code Pro code, and New Computer Modern math are defaults. Raw HTML and arbitrary CSS are not supported. Theme discovery never searches document or parent directories unless they are the invocation directory. Frontmatter changes only declared keys; `enabled = false`, empty slot strings, and `logo = false` explicitly suppress inherited decorations.
+### Math and Mermaid
 
-Reusable user-global theme example; logo paths are relative to the theme file:
+**MathJax replaces a native TeX toolchain.** [`math.ts`](src/render/math.ts) converts mathematical TeX to vector SVG in the main process. MathJax 4.1.3 and all New Computer Modern glyph ranges are bundled: no CDN, native TeX installation, subprocess, or host-font fallback. `$...$` is inline math; standalone `$$` lines delimit display math. SVG baseline measurements preserve inline alignment.
 
-```toml
-[header]
-left = "Engineering"
-center = "{{title}}"
-right = "{{filename}}"
-font_size = "9pt"
+The enabled packages are `base`, `ams`, `mathtools`, `newcommand`, `textmacros`, `boldsymbol`, and `color`. TOML macros specify `args` (0–9) and a TeX `body`, but cannot replace built-ins. Fresh parser state isolates each expression; input is capped at 64 KiB, with bounded expansion and caching. Invalid commands, unsupported glyphs, and malformed expressions produce diagnostics rather than placeholders. Full LaTeX documents, arbitrary packages, file input, shell execution, and `\require` are unsupported; the math font is fixed.
 
-[header.logo]
-path = "assets/logo.png"
-position = "left"
-width = "18mm"
-height = "8mm"
+**Mermaid runs in the print renderer**, where fonts and DOM measurements are available. [`mermaid.ts`](src/render/mermaid.ts) recognizes fences labeled exactly `mermaid`, enables strict security, disables HTML labels, and rejects inline configuration directives/frontmatter. TOML is the single configuration path. `[mermaid.charts.N]` overrides diagrams by one-based Mermaid-only order. One dimension scales proportionally; two define a bounding box. Natural-size diagrams only shrink to fit; explicit sizes may enlarge them, within the printable area.
 
-[footer]
-left = "Internal"
-center = "{{page}} / {{pages}}"
-```
+The shared [SVG sanitizer](src/renderer/print/sanitize-svg.ts) checks image/diagram/math SVG before insertion, rejecting active content and external references. Inserted math/diagram IDs are namespaced to avoid collisions.
 
-Header and footer logos preserve their aspect ratio inside the configured `width` × `height` box. `position = "left"`, `"center"`, or `"right"` controls both the page slot and horizontal artwork alignment within that box; artwork stays vertically centered. Whitespace embedded in the image is preserved.
+## Page layout and printing
 
-Frontmatter `[header] center = ""` clears only the center, retaining other slots/logo. User-global discovery is read-only; create the theme yourself if desired.
+[`src/render/pdf.ts`](src/render/pdf.ts) serializes print jobs and creates an isolated hidden window for each, with cancellation and a 60-second timeout. The [print renderer](src/renderer/print/main.ts) loads fonts, decodes images, renders diagrams, inserts math, and waits for layout readiness before printing.
 
-### Mermaid sizing and chart overrides
+- **One pagination engine:** generated CSS `@page` owns physical dimensions, orientation, margins, and repeated decorations. `printToPDF` uses CSS page sizing, backgrounds, zero API margins, and no built-in header/footer templates. Page-margin boxes require Chromium 131+.
+- **Fit without stretching:** images and diagrams fit the printable area. Blocks that fit a page are kept together; oversized tables/code/quotes remain splittable.
+- **Measured decorations:** [headers/footers](src/renderer/print/page-decoration.ts) have left/center/right slots, wrapping text, and aspect-preserving logos. Tokens are `{{filename}}`, `{{title}}`, `{{page}}`, and `{{pages}}`; quadruple braces escape literal double braces. Overflow reports a required margin adjustment instead of clipping or silently shrinking.
+- **Post-print validation:** PDF.js parses the generated bytes and supplies the real page count for another decoration-overflow check. Tagged output and outlines are requested, but PDF/UA compliance is not promised. Prose/code are selectable; vector math is not guaranteed to be copyable/searchable.
 
-Set shared diagram settings in `theme.toml` (or document TOML frontmatter), then override individual diagrams by their one-based Mermaid-only order in the Markdown source, top to bottom. Other code fences do not count.
+## Configuration model
 
-```toml
-[mermaid]
-width = "120mm"
-theme = "neutral"
-font_size = "11pt"
+[`src/config/load.ts`](src/config/load.ts) recursively merges defaults → `~/Library/Application Support/docm/theme.toml` → invocation-directory `theme.toml` → `--config` → document TOML frontmatter. Frontmatter uses opening/closing `+++` lines at the start of the document. Automatic files are optional; explicit configs must exist. CLI discovery does not walk parent directories or implicitly search beside the document.
 
-[mermaid.charts.1]
-width = "80mm"
+Strict Zod [schemas](src/config/schema.ts) validate every layer before merging, including values later overridden. Unknown keys, invalid units/colors/font aliases, and margins that leave no printable area are errors. Element typography inherits from the final body style; box spacing does not. Chart overrides inherit final global Mermaid settings. Empty decoration slots, `enabled = false`, and `logo = false` explicitly suppress inherited values.
 
-[mermaid.charts.2]
-width = "150mm"
-height = "70mm"
-theme = "forest"
-font = "mono"
-font_size = "13pt"
-padding = "2mm"
-space_before = "12pt"
-```
+[`src/config/defaults.ts`](src/config/defaults.ts) is the runtime source of defaults; [`defaults.toml`](defaults.toml) is an editable reference, not automatically loaded. Use `--config defaults.toml` or copy it to `theme.toml`. Defaults include A4 portrait, 20 mm margins, Source Sans 3 prose, Source Code Pro code, and New Computer Modern math. Consult the schema for all supported options.
 
-`width` and `height` are optional positive lengths in `px`, `pt`, `mm`, `cm`, or `in`. One dimension sets the requested size with uniform scaling; both dimensions fit the diagram inside that bounding box without stretching. Explicit sizes may enlarge or shrink a diagram, but the printable area (after padding, borders, and spacing) remains the upper limit. With neither dimension, diagrams retain their natural size and only shrink to fit the page. Dimensions describe the diagram SVG, excluding the wrapper's padding and border.
+## Live updates and safe export
 
-Each chart can override every supported Mermaid setting: `width`, `height`, `theme` (`default`, `neutral`, `dark`, `forest`), `font`, `font_size`, `font_weight`, `font_style`, `text_align`, `line_height`, `color`, `background`, `space_before`, `space_after`, `padding`, `border_color`, `border_width`, and `border_radius`. Chart entries merge across the normal configuration layers, then inherit the final global Mermaid settings; explicit chart fields take precedence. An omitted dimension still inherits its global value, so a chart-specific height plus an inherited width forms a bounding box.
+[`PreviewSession`](src/main/session.ts) owns Chokidar watchers, dependencies, revisions, cancellation, and export. Changes are debounced by 250 ms; newer revisions abort obsolete work. The watch set includes source, themes, images, fonts, logos, and missing dependency paths needed for recovery. Results carry SHA-256 dependency snapshots and are published only while their revision and snapshot remain current: filesystem notifications alone do not establish freshness.
 
-Chart numbers must be positive integers without leading zeros. Entries for charts absent from a document are allowed, so shared themes can include sparse overrides. Charts cannot contain another `charts` table. Mermaid inline configuration directives/frontmatter remain disabled; use these TOML settings.
+The [preview](src/renderer/preview/main.ts) retains the last good PDF while replacements render or fail, showing a stale/error diagnostic rather than blanking the document. [PDF.js integration](src/renderer/preview/pdf-preview.ts) supplies continuous pages, text/link layers, zoom/fit controls, lazy rendering with bounded page buffering, and approximate reading-position restoration. Superseded document loads are cancelled and released. PDF.js is pinned to 5.4.394 and configured with `isEvalSupported: false`; the viewer accepts generated bytes, not arbitrary imported PDFs.
 
-## Development
+**Export saves the latest successful displayed revision**, not a screenshot or a differently configured re-render. After the native dialog, it waits for current rendering, checks dependencies, and rechecks snapshot/revision before committing. Changed inputs trigger fresh work; invalid current input refuses stale export. Cancellation writes nothing.
 
-Use the versions pinned by `mise.toml` and pnpm. Project-local dependency and runtime downloads require approval. `mise exec -- pnpm install` installs JavaScript dependencies. `mise run` exposes build, typecheck, test, smoke, app assembly and source-formula tasks. No TeX installation or runtime download is required.
+[`output.ts`](src/main/output.ts) rejects destinations aliasing source/config/assets, including resolved symlinks and existing hard links. Output goes to an exclusively created same-directory temporary file, which is synced/closed and renamed into place. Precommit failures preserve the existing destination and clean up the temporary file. This is atomic replacement, not a filesystem lock against other processes.
 
-## Authoring
+## Process boundaries
 
-CommonMark, GFM tables/tasks/endnotes, Shiki-highlighted fenced code, `$...$` inline math, display math between separate `$$` lines, and fences labeled exactly `mermaid`. Unknown code languages render as plain escaped code. A standalone `:::pagebreak` line interrupts prose without a blank line; fenced, indented, inline-code and math literals remain literal. Leading/trailing/repeated breaks do not create empty pages.
+The main process owns filesystem access, dialogs, and writes. Both renderers disable Node integration and enable context isolation, sandboxing, and web security. Narrow [preload bridges](src/preload) expose only required operations; main-process IPC checks the sending window and main frame, with an additional URL check for preview requests.
 
-Images must be local PNG, JPEG, WebP, GIF or self-contained sanitized SVG. Relative paths belong to the Markdown file; percent escapes and spaces work. External HTTP/HTTPS/mailto links remain links but their targets are not fetched while rendering. Heading IDs are unique; optional `[document] toc = true` and `number_headings = true` add a linked contents block and heading numbering without changing heading levels.
+The [`docm:` protocol](src/main/protocol.ts) serves allowlisted bundled resources, applies resource policies, denies permissions, and blocks navigation, popups, and webviews. Print documents block network connections; approved external links open through the system, not inside the app. Bundled fonts/viewer resources and embedded assets allow offline rendering. Shutdown aborts work, closes print windows, stops watchers, and releases resources.
 
-## Offline math and printing
+## Build, distribution, and verification
 
-MathJax 4.1.3 converts math to vector SVG in the main process using locally bundled New Computer Modern glyph data. All font ranges are bundled; there is no CDN, network loader, host-font fallback, native TeX engine, TeX distribution, or executable-math subprocess.
+TypeScript builds through electron-vite: ESM main process, CommonJS preloads, separate preview/print bundles. electron-builder assembles the arm64 app, bundled runtime, assets, and third-party notices. [`mise.toml`](mise.toml) exposes project tasks with pinned Node/pnpm; pnpm and its lockfile manage JavaScript dependencies.
 
-Supported packages are `base`, `ams`, `mathtools`, `newcommand`, `textmacros`, `boldsymbol`, and `color`. `[math]` retains `font_size`, `color`, display spacing and `[math.macros.NAME]` declarations with `args` (0–9) and a TeX `body`. Configured macros cannot replace built-in commands; expression-local definitions do not leak into other equations. The math font is fixed to New Computer Modern.
+| Tasks | Purpose |
+|---|---|
+| `mise run dev` | Development application |
+| `mise run build`, `mise run typecheck`, `mise run test` | Compile, check types, run Vitest |
+| `mise run smoke` | Build and exercise the Electron CLI/preview |
+| `mise run package`, `mise run package:smoke` | Assemble `dist/mac-arm64/Docm.app`, exercise the bundle |
+| `mise run formula:prepare`, `mise run formula:install` | Prepare private Homebrew inputs, source-build/install |
+| `mise run formula:refresh`, `mise run formula:smoke` | Rebuild after changes, exercise installed app |
 
-This is MathJax's mathematical TeX syntax, not a full LaTeX document processor. Arbitrary packages, preambles, document classes, file input, shell execution, `\require`, and HTML/link extensions are unsupported. Unknown commands, malformed input, unsupported glyphs and excessive macro expansion produce source-position diagnostics rather than placeholder output. Input is limited to 64 KiB per expression, with bounded expansion and a bounded SVG cache; canceled revisions do not publish output.
+The private `docm/local` formula builds TypeScript in a clean staged tree from checksummed source, a frozen offline pnpm store, and an existing Electron archive—not checkout outputs or an old app. **Electron/Chromium remains prebuilt upstream; “source-built” applies to docm.** Installation uses Cellar `libexec` plus a CLI symlink, not `/Applications`. Local `file://` inputs make this checkout-specific, not a public Homebrew release.
 
-Chromium CSS `@page` owns physical size, margins and repeated decorations. Unknown decoration tokens error; supported tokens are `{{filename}}`, `{{title}}`, `{{page}}`, `{{pages}}`; quadruple braces escape literal double braces. Decoration text wraps. Overflow is rejected with a required margin adjustment rather than clipped or automatically resized. Outline generation uses tagged printing; PDF/UA compliance is not promised. Prose/code are selectable; vector math is not promised to be copyable/searchable.
+[Distribution scripts](scripts/homebrew.mjs) verify ownership/provenance before replacing installations, refuse unrelated or modified products, and require existing tooling instead of installing/upgrading it. Signing is ad-hoc, without Developer ID or notarization; Gatekeeper, quarantine, and sandbox protections are not bypassed.
 
-PDF.js is pinned to 5.4.394: it retains `isEvalSupported:false` and supports replacement without the shared-page-map reset in 5.4.624. The preview renders only application-generated PDFs, not arbitrary imported PDFs.
-
-The smoke task launches the actual Electron window and exercises PDF output, watches, reading controls, export IPC, and 200-page updates. Export checks control only the native dialog's response; macOS Save-panel automation is deliberately not attempted and requires no Automation/Accessibility permission. Screenshots and machine-readable evidence are written under `.build/smoke`.
-
-## Source-building Homebrew distribution
-
-Native arm64, macOS 13 (Ventura) or newer. Homebrew builds docm from its TypeScript sources in a fresh staged directory, then installs the resulting `Docm.app` under the formula's Cellar `libexec` and links its terminal-attached launcher as `docm`. It does not download or install a prebuilt docm app, use the checkout's `out`/`dist`, or copy an app into `/Applications`.
-
-Electron/Chromium remains a prebuilt upstream runtime dependency; npm dependencies and New Computer Modern glyph data are locked build inputs, not rebuilt from their upstream source repositories. The source-building claim applies to docm. The installed app bundles its runtime, fonts/viewer assets and third-party licenses, needs no developer Node/pnpm on PATH, and renders offline.
-
-```sh
-mise run formula:prepare
-mise run formula:install
-mise run formula:smoke
-```
-
-The existing Homebrew `mise` and exact Node/pnpm versions from `mise.toml` must already be available. These tasks refuse to install missing developer tooling, upgrade dependencies, use sudo, request OS permissions, or disable security protections. Preparation creates checksummed source, frozen pnpm-store and existing Electron-runtime archives under `.build/formula-inputs`. The source archive excludes compiled outputs, dependency directories and generated caches. The formula stages its inputs and runs `mise run formula:build` to install project dependencies with offline/frozen pnpm, typecheck, compile and assemble the app. No network loader or old-app fallback is used during the build.
-
-Toolchain preflight and staged formula builds use an empty global mise config and stop parent-config discovery at the checkout/build directory's parent. They reuse the existing mise tool installations without loading ancestor or user-global configs, or changing your normal config trust records.
-
-Generated formula: `.build/homebrew-tap/Formula/docm.rb`; dedicated tap: `docm/local`; install command after preparation: `brew install --formula --build-from-source docm/local/docm`. Inputs use absolute local `file://` URLs and actual SHA-256 digests, so this private distribution is specific to the checkout. Public distribution requires hosting those source/resource archives and updating their URLs; an official Homebrew listing is not implied.
-
-The first install migrates only the previously recorded owned cask after checking its content, directory identities, tap and launcher. Unrelated products or modified owned installations are never overwritten. Homebrew auto-update is disabled for these project tasks. Ordinary prepare/install are idempotent for unchanged inputs; use `mise run formula:refresh` after source changes to explicitly rebuild the owned formula. Interrupted migrations or replacements retain a failure stage and refuse automatic adoption.
-
-`formula:smoke` checks the source-build receipt (not poured from a bottle), input checksums, installed provenance, native arm64 code, deep ad-hoc signature and launcher link, then exercises the actual Homebrew-installed CLI and desktop preview with developer tools absent from the runtime PATH. It covers PDF outputs, vector math, themes/assets, watches, latest-revision export, Ctrl-C, and 200-page rendering. Evidence is under `.build/formula-smoke` and `.build/formula-verification.json`.
-
-No Apple Developer ID certificate or notarization is used; local ad-hoc signing preserves the Apple Silicon execution signature. Gatekeeper, quarantine and the Electron/Homebrew sandboxes are not bypassed. The former prebuilt quarantined cask was denied by Gatekeeper; it is never launched during migration. The source-built app must pass actual launch verification without removing quarantine attributes.
-
-The installed CLI/preview is verified with `formula:smoke`, not by treating Homebrew's developer test sandbox as a desktop session. On this host, `brew test docm/local/docm` aborts in AppKit's `NSApplication` registration before application JavaScript runs; the same installed app passes the real desktop/CLI smoke. Do not disable Homebrew's sandbox to force that test through. `brew test` can also bootstrap Homebrew's own Ruby developer-test dependencies; the project formula tasks do not invoke it.
-
-For standalone local assembly, `mise run package` produces `dist/mac-arm64/Docm.app`, not a distribution ZIP. `package:smoke` exercises that bundle separately. `notices:prepare` preserves dependency/font licenses, New Computer Modern attribution and DOMPurify corresponding source. Native Save-panel interaction remains unautomated: export smoke controls only the dialog response while exercising the real IPC/session/atomic writer.
+[`scripts/smoke.mjs`](scripts/smoke.mjs) exercises PDF contents, themes/assets, watch recovery, reading controls, export consistency, Ctrl-C, and repeated 200-page updates. Screenshots/reports go under `.build/smoke`, `.build/package-smoke`, or `.build/formula-smoke`. Export smoke controls the native dialog response while exercising real IPC, freshness checks, and writes; native Save-panel interaction remains unautomated. Installed desktop behavior uses `formula:smoke`, not a disabled Homebrew test sandbox.
