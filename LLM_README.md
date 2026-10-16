@@ -75,6 +75,8 @@ TypeScript builds through electron-vite: ESM main process, CommonJS preloads, se
 
 With the pinned Node/pnpm versions available, `pnpm run build` compiles the application and `pnpm run package` compiles, prepares notices, and assembles `dist/mac-arm64/Docm.app` in order. The corresponding mise tasks delegate to these same scripts. The frozen-source build additionally checks types, installs locked dependencies offline, and stages the supplied Electron runtime; it invokes only Node/pnpm and macOS system tools, never mise. Tool discovery validates the running Node and an actual installed pnpm executable on PATH; it does not install tools or depend on manager shims.
 
+Electron 44 has no package `postinstall` hook: `pnpm install` installs its JavaScript package but does not download `electron/dist`. After a fresh dependency installation, run `mise run bootstrap:electron` (or `pnpm run bootstrap:electron`) before development, packaging, or release preparation. The composite CI setup opts into this explicit runtime bootstrap through `electron: "true"` in CI and release-build jobs; publication, public-install verification, and formula-PR jobs do not bootstrap an unnecessary checkout runtime.
+
 | Tasks | Purpose |
 |---|---|
 | `mise run dev` | Development application |

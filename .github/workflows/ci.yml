@@ -22,6 +22,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+        with:
+          electron: "true"
       - name: Check types
         run: mise run typecheck
       - name: Run behavior tests

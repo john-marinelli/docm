@@ -27,6 +27,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup
+        with:
+          electron: "true"
       - name: Resolve the tagged source commit
         id: source
         shell: bash

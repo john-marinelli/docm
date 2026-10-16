@@ -34,7 +34,7 @@ run = "pnpm run formula:refresh"
 run = "pnpm run formula:smoke"
 
 [tasks."bootstrap:electron"]
-run = "pnpm exec install-electron"
+run = "pnpm run bootstrap:electron"
 
 [tasks."release:version"]
 run = "pnpm run release:version"

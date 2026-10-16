@@ -4,6 +4,9 @@ inputs:
   dependencies:
     description: Install project dependencies
     default: "true"
+  electron:
+    description: Download the locked Electron runtime for build preparation
+    default: "false"
 runs:
   using: composite
   steps:
@@ -15,3 +18,7 @@ runs:
       if: inputs.dependencies == 'true'
       shell: bash
       run: mise exec -- pnpm install --frozen-lockfile
+    - name: Bootstrap Electron runtime
+      if: inputs.dependencies == 'true' && inputs.electron == 'true'
+      shell: bash
+      run: mise run bootstrap:electron
