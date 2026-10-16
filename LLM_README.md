@@ -53,6 +53,8 @@ Strict Zod [schemas](src/config/schema.ts) validate every layer before merging, 
 
 [`src/config/defaults.ts`](src/config/defaults.ts) is the runtime source of defaults; [`defaults.toml`](defaults.toml) is an editable reference, not automatically loaded. Use `--config defaults.toml` or copy it to `theme.toml`. Defaults include A4 portrait, 20 mm margins, Source Sans 3 prose, Source Code Pro code, and New Computer Modern math. Consult the schema for all supported options.
 
+Each heading block, `[headings.h1]` through `[headings.h6]`, supports `text_align` values `left`, `center`, `right`, and `justify`. The reference TOML explicitly sets all six to `left`; themes that omit the setting still inherit body alignment.
+
 ## Live updates and safe export
 
 [`PreviewSession`](src/main/session.ts) owns Chokidar watchers, dependencies, revisions, cancellation, and export. Changes are debounced by 250 ms; newer revisions abort obsolete work. The watch set includes source, themes, images, fonts, logos, and missing dependency paths needed for recovery. Results carry SHA-256 dependency snapshots and are published only while their revision and snapshot remain current: filesystem notifications alone do not establish freshness.
