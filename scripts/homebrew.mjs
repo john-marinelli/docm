@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pins } from './prepare-formula.mjs';
 
 const project = await realpath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const build = path.join(project, '.build');
@@ -116,15 +117,26 @@ async function readManifest() {
 }
 async function distribution() {
   const inputs = await readJson(inputsPath);
-  if (inputs.schema !== 1 || inputs.project !== project || inputs.version !== '0.1.0' || inputs.tools?.node !== '26.10.0' || inputs.tools?.pnpm !== '12.10.1' || !path.isAbsolute(inputs.tools?.miseDataDir ?? '')) conflict(inputsPath, 'invalid source/resource/tool contract');
+  if (inputs.schema !== 1 || inputs.project !== project || inputs.version !== '0.1.0' || inputs.tools?.node !== pins.node || inputs.tools?.pnpm !== pins.pnpm || Object.keys(inputs.tools).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'invalid source/resource/tool contract; regenerate formula inputs');
   if (!Array.isArray(inputs.resources) || inputs.resources.length !== 2 || inputs.resources.map(item => item.name).sort().join(',') !== 'electron,pnpm-store') conflict(inputsPath, 'expected exactly electron and pnpm-store resources');
+  if (!Array.isArray(inputs.toolResources) || inputs.toolResources.length !== 2 || inputs.toolResources.map(item => item?.name).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'expected exactly node and pnpm tool resources; regenerate formula inputs');
+  const toolUrls = {
+    node: `https://nodejs.org/dist/v${pins.node}/node-v${pins.node}-darwin-arm64.tar.xz`,
+    pnpm: `https://registry.npmjs.org/pnpm/-/pnpm-${pins.pnpm}.tgz`,
+  };
+  for (const item of inputs.toolResources) {
+    if (Object.keys(item).sort().join(',') !== 'name,sha256,url' || item.url !== toolUrls[item.name] || !validHash(item.sha256)) conflict(inputsPath, 'invalid official pinned tool resource URL/checksum');
+  }
   for (const item of [inputs.source, ...inputs.resources]) {
     if (!item || !path.isAbsolute(item.archive ?? '') || !validHash(item.sha256)) conflict(inputsPath, 'invalid archive location/checksum');
     if (await hashFile(item.archive) !== item.sha256) conflict(item.archive, 'source/resource checksum differs from preparation manifest');
   }
   const inputsSha256 = sha(JSON.stringify(inputs));
-  const provenance = { schema: 1, project, version: inputs.version, inputsSha256, source: inputs.source, resources: inputs.resources, tools: inputs.tools };
-  const resources = inputs.resources.map(item => `  resource ${ruby(item.name)} do\n    url ${ruby(pathToFileURL(item.archive).href)}\n    sha256 ${ruby(item.sha256)}\n  end\n`).join('\n');
+  const provenance = { schema: 1, project, version: inputs.version, inputsSha256, source: inputs.source, resources: inputs.resources, tools: inputs.tools, toolResources: inputs.toolResources };
+  const resources = [
+    ...inputs.resources.map(item => ({ ...item, url: pathToFileURL(item.archive).href })),
+    ...inputs.toolResources,
+  ].map(item => `  resource ${ruby(item.name)} do\n    url ${ruby(item.url)}\n    sha256 ${ruby(item.sha256)}\n  end\n`).join('\n');
   const formula = `class Docm < Formula
   desc "Offline Markdown to PDF desktop application"
   homepage ${ruby(pathToFileURL(project + path.sep).href)}
@@ -135,7 +147,6 @@ async function distribution() {
 
   depends_on macos: :ventura
   depends_on arch: :arm64
-  depends_on "mise" => :build
   preserve_rpath
 
 ${resources}
@@ -144,21 +155,17 @@ ${resources}
   def install
     resource("pnpm-store").stage(buildpath/".formula-store")
     resource("electron").stage(buildpath/".formula-electron")
-    (buildpath/".formula-empty-config.toml").write ""
+    resource("node").stage(buildpath/".formula-node")
+    resource("pnpm").stage(buildpath/".formula-pnpm")
+    (buildpath/".formula-pnpm/bin/pnpm.cjs").chmod 0755
+    (buildpath/".formula-pnpm/bin/pnpm").make_symlink "pnpm.cjs"
+    ENV.prepend_path "PATH", buildpath/".formula-node/bin"
+    ENV.prepend_path "PATH", buildpath/".formula-pnpm/bin"
     ENV["DOCM_FORMULA_STORE"] = (buildpath/".formula-store").to_s
     ENV["DOCM_FORMULA_ELECTRON"] = (buildpath/".formula-electron").to_s
-    ENV["DOCM_FORMULA_MISE"] = (Formula["mise"].opt_bin/"mise").to_s
-    ENV.prepend_path "PATH", Formula["mise"].opt_bin
-    ENV["MISE_DATA_DIR"] = ${ruby(inputs.tools.miseDataDir)}
-    ENV["MISE_AUTO_INSTALL"] = "false"
-    ENV["MISE_CACHE_DIR"] = (buildpath/".formula-mise-cache").to_s
-    ENV["MISE_STATE_DIR"] = (buildpath/".formula-mise-state").to_s
-    ENV["MISE_GLOBAL_CONFIG_FILE"] = (buildpath/".formula-empty-config.toml").to_s
-    ENV["MISE_CEILING_PATHS"] = buildpath.parent.to_s
-    ENV["MISE_TRUSTED_CONFIG_PATHS"] = buildpath.to_s
     ENV["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
     ENV["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
-    system ENV["DOCM_FORMULA_MISE"], "run", "formula:build"
+    system "pnpm", "run", "formula:build"
     libexec.install "dist/mac-arm64/Docm.app"
     (libexec/"docm-source-receipt.json").write ${ruby(JSON.stringify(provenance) + '\n')}
     bin.install_symlink libexec/"Docm.app/Contents/Resources/bin/docm"
@@ -169,7 +176,7 @@ ${resources}
       This private local source build uses an upstream prebuilt Electron runtime.
       Docm.app has only an ad-hoc signature, not Developer ID/notarization.
       No quarantine, Gatekeeper, sandbox or other macOS protection is bypassed.
-      Pinned Node/pnpm must already exist in the recorded mise data directory.
+      Pinned Node/pnpm are staged from checksummed official build resources.
     EOS
   end
 
@@ -192,30 +199,6 @@ async function brewContext() {
   const cellar = await run(brew, ['--cellar']);
   const tap = path.join(repository, 'Library/Taps/docm/homebrew-local');
   return { brew, prefix, repository, caskroom, cellar, tap, tapFormula: path.join(tap, 'Formula/docm.rb'), tapCask: path.join(tap, 'Casks/docm.rb'), binary: path.join(prefix, 'bin/docm') };
-}
-async function toolPreflight(context, inputs) {
-  // Query only existing Homebrew installations. Never let brew resolve/install a missing build dependency.
-  const installed = await run(context.brew, ['list', '--formula', '--versions', 'mise']);
-  if (!/^mise\s+2026\.10\.2(?:\s|$)/m.test(installed)) throw new Error('Existing Homebrew mise 2026.10.2 is required; no tooling will be installed/upgraded.');
-  const mise = path.join(await run(context.brew, ['--prefix', 'mise']), 'bin/mise');
-  await access(mise, constants.X_OK);
-  if (!/^2026\.10\.2(?:\s|$)/.test(await run(mise, ['--version']))) throw new Error('Homebrew build mise must be exactly 2026.10.2.');
-  await identity(inputs.tools.miseDataDir);
-  const isolated = await mkdtemp(path.join(tmpdir(), 'docm formula tool preflight '));
-  try {
-    const empty = path.join(isolated, 'config.toml');
-    await writeFile(empty, '');
-    // Replacing global config does not exclude home-directory config discovered as an ancestor.
-    const env = { ...brewEnv, MISE_DATA_DIR: inputs.tools.miseDataDir, MISE_AUTO_INSTALL: 'false', MISE_GLOBAL_CONFIG_FILE: empty, MISE_CEILING_PATHS: path.dirname(project), MISE_CACHE_DIR: path.join(isolated, 'cache'), MISE_STATE_DIR: path.join(isolated, 'state'), MISE_TRUSTED_CONFIG_PATHS: project };
-    for (const [name, expected] of [['node', inputs.tools.node], ['pnpm', inputs.tools.pnpm]]) {
-      const executable = await run(mise, ['which', name, '--tool', `${name}@${expected}`], { env });
-      const resolved = await realpath(executable);
-      if (!resolved.startsWith(await realpath(inputs.tools.miseDataDir) + path.sep)) conflict(resolved, 'build runtime is outside the existing mise data directory');
-      await access(resolved, constants.X_OK);
-      const version = await run(mise, ['exec', `node@${inputs.tools.node}`, `pnpm@${inputs.tools.pnpm}`, '--', name, '--version'], { env });
-      if (version.replace(/^v/, '') !== expected) throw new Error(`Existing ${name} must be ${expected}; got ${version}. Auto-install is disabled.`);
-    }
-  } finally { await rm(isolated, { recursive: true, force: true }); }
 }
 async function symlinkDestination(location) {
   let current = location;
@@ -331,7 +314,7 @@ async function verifyInstalled(context, record, { capture = false } = {}) {
   if (receipt.poured_from_bottle !== false || receipt.source?.tap !== tapName || receipt.source?.versions?.stable !== record.inputs.version) conflict(receiptPath, 'receipt is not this tap/version built from source');
   if (await hashFile(path.join(keg, '.brew/docm.rb')) !== record.formulaSha256) conflict(keg, 'installed formula differs from owned source recipe');
   const sourceReceipt = await readJson(path.join(keg, 'libexec/docm-source-receipt.json'));
-  const expected = { schema: 1, project, version: record.inputs.version, inputsSha256: record.inputsSha256, source: record.inputs.source, resources: record.inputs.resources, tools: record.inputs.tools };
+  const expected = { schema: 1, project, version: record.inputs.version, inputsSha256: record.inputsSha256, source: record.inputs.source, resources: record.inputs.resources, tools: record.inputs.tools, toolResources: record.inputs.toolResources };
   if (JSON.stringify(sourceReceipt) !== JSON.stringify(expected)) conflict(keg, 'installed source/resource provenance differs');
   await verifyLink(context.binary, launcher);
   await verifyLink(path.join(keg, 'bin/docm'), launcher);
@@ -478,7 +461,6 @@ async function main() {
   const details = await distribution();
   const context = await brewContext();
   let record = await readManifest();
-  await toolPreflight(context, details.inputs);
   await preflight(context, record);
   if (command === 'refresh') await refresh(context, record, details);
   else if (command === 'smoke') {

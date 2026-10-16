@@ -16,7 +16,6 @@ async function resource(variable,name){
 // Never reuse a checkout's output, installed dependency tree, or a previous app.
 for(const name of ['node_modules','out','dist'])await absent(path.join(root,name));
 await absent(path.join(root,'.build','third-party-notices'));
-if(process.env.MISE_AUTO_INSTALL!=='false')throw new Error('Formula builds require MISE_AUTO_INSTALL=false');
 const tools=await discoverTools();
 const store=await resource('DOCM_FORMULA_STORE','.formula-store');
 const electron=await resource('DOCM_FORMULA_ELECTRON','.formula-electron');
@@ -32,7 +31,7 @@ await validateElectron(electron,electronVersion);
 const state=path.join(root,'.formula-build');
 await mkdir(state,{recursive:true});
 const npmrc=path.join(state,'empty.npmrc');await writeFile(npmrc,'');
-const env={...process.env,CI:'1',MISE_AUTO_INSTALL:'false',ELECTRON_SKIP_BINARY_DOWNLOAD:'1',ELECTRON_BUILDER_CACHE:path.join(state,'electron-builder-cache'),CSC_IDENTITY_AUTO_DISCOVERY:'false',npm_config_ignore_scripts:'true',npm_config_offline:'true'};
+const env={...process.env,CI:'1',ELECTRON_SKIP_BINARY_DOWNLOAD:'1',ELECTRON_BUILDER_CACHE:path.join(state,'electron-builder-cache'),CSC_IDENTITY_AUTO_DISCOVERY:'false',npm_config_ignore_scripts:'true',npm_config_offline:'true'};
 delete env.ELECTRON_OVERRIDE_DIST_PATH;
 delete env.ELECTRON_RUN_AS_NODE;
 // Dependency tarballs (including native optional packages) come solely from the
@@ -58,8 +57,8 @@ for(const entry of await tree(dist)){
   if(!id?.startsWith('@loader_path/'))throw new Error(`Unexpected upstream dylib ID: ${library}: ${id}`);
   await run('/usr/bin/install_name_tool',['-id',`@rpath/${path.posix.basename(id)}`,library]);
 }
-await run(tools.mise,['run','typecheck'],{env});
-await run(tools.mise,['run','package'],{env});
+await run(tools.pnpm,['run','typecheck'],{env});
+await run(tools.pnpm,['run','package'],{env});
 const app=path.join(root,'dist','mac-arm64','Docm.app');
 if(!(await lstat(app)).isDirectory()||(await lstat(app)).isSymbolicLink())throw new Error('Source packaging did not produce dist/mac-arm64/Docm.app');
 console.error(`Built docm from clean frozen source: ${app}`);

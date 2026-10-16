@@ -71,19 +71,24 @@ The [`docm:` protocol](src/main/protocol.ts) serves allowlisted bundled resource
 
 ## Build, distribution, and verification
 
-TypeScript builds through electron-vite: ESM main process, CommonJS preloads, separate preview/print bundles. electron-builder assembles the arm64 app, bundled runtime, assets, and third-party notices. [`mise.toml`](mise.toml) exposes project tasks with pinned Node/pnpm; pnpm and its lockfile manage JavaScript dependencies.
+TypeScript builds through electron-vite: ESM main process, CommonJS preloads, separate preview/print bundles. electron-builder assembles the arm64 app, bundled runtime, assets, and third-party notices. [`mise.toml`](mise.toml) remains the single authority for exact Node/pnpm versions and exposes every project task. Mise is a developer entry point, not a build dependency: preparation and source builds read its quoted `[tools]` version entries directly without executing mise or requiring its configuration/data directories.
+
+With the pinned Node/pnpm versions available, `pnpm run build` compiles the application and `pnpm run package` compiles, prepares notices, and assembles `dist/mac-arm64/Docm.app` in order. The corresponding mise tasks delegate to these same scripts. The frozen-source build additionally checks types, installs locked dependencies offline, and stages the supplied Electron runtime; it invokes only Node/pnpm and macOS system tools, never mise. Tool discovery validates the running Node and an actual installed pnpm executable on PATH; it does not install tools or depend on manager shims.
 
 | Tasks | Purpose |
 |---|---|
 | `mise run dev` | Development application |
 | `mise run build`, `mise run typecheck`, `mise run test` | Compile, check types, run Vitest |
 | `mise run smoke` | Build and exercise the Electron CLI/preview |
+| `mise run build:smoke` | Build fresh source without mise on PATH, then exercise the packaged CLI |
 | `mise run package`, `mise run package:smoke` | Assemble `dist/mac-arm64/Docm.app`, exercise the bundle |
 | `mise run formula:prepare`, `mise run formula:install` | Prepare private Homebrew inputs, source-build/install |
 | `mise run formula:refresh`, `mise run formula:smoke` | Rebuild after changes, exercise installed app |
 
-The private `docm/local` formula builds TypeScript in a clean staged tree from checksummed source, a frozen offline pnpm store, and an existing Electron archive—not checkout outputs or an old app. **Electron/Chromium remains prebuilt upstream; “source-built” applies to docm.** Installation uses Cellar `libexec` plus a CLI symlink, not `/Applications`. Local `file://` inputs make this checkout-specific, not a public Homebrew release.
+The private `docm/local` formula builds TypeScript in a clean staged tree from checksummed source, a frozen offline pnpm store, and an existing Electron archive—not checkout outputs or an old app. It stages official Node and pnpm build resources at the exact versions selected by `mise.toml`, then runs `pnpm run formula:build`; no preinstalled mise or personal tool directory is required. Preparation obtains Node's archive checksum from its release checksum list and validates the pnpm registry archive's SHA-512 integrity before recording its SHA-256. Homebrew fetches the resources before the network-denied build. **Electron/Chromium remains prebuilt upstream; “source-built” applies to docm.** Installation uses Cellar `libexec` plus a CLI symlink, not `/Applications`. Source/store/Electron `file://` inputs still make this checkout-specific, not a public Homebrew release.
 
-[Distribution scripts](scripts/homebrew.mjs) verify ownership/provenance before replacing installations, refuse unrelated or modified products, and require existing tooling instead of installing/upgrading it. Signing is ad-hoc, without Developer ID or notarization; Gatekeeper, quarantine, and sandbox protections are not bypassed.
+[Distribution scripts](scripts/homebrew.mjs) verify ownership/provenance before replacing installations and refuse unrelated or modified products. Local maintenance commands do not install/upgrade global tooling; preparation needs the exact Node/pnpm versions already available. Existing installations change only through explicit refresh, not ordinary preparation. Signing is ad-hoc, without Developer ID or notarization; Gatekeeper, quarantine, and sandbox protections are not bypassed.
 
 [`scripts/smoke.mjs`](scripts/smoke.mjs) exercises PDF contents, themes/assets, watch recovery, reading controls, export consistency, Ctrl-C, and repeated 200-page updates. Screenshots/reports go under `.build/smoke`, `.build/package-smoke`, or `.build/formula-smoke`. Export smoke controls the native dialog response while exercising real IPC, freshness checks, and writes; native Save-panel interaction remains unautomated. Installed desktop behavior uses `formula:smoke`, not a disabled Homebrew test sandbox.
+
+[`scripts/build-smoke.mjs`](scripts/build-smoke.mjs) stages a fresh source tree and frozen dependencies, reuses existing Node/pnpm binaries with mise absent from PATH, removes mise environment variables, and uses a fresh HOME. It runs the complete source build/package path, checks the app signature, and verifies PDF text from the packaged CLI with no developer tools on its runtime PATH. Evidence is written under `.build/build-smoke`; this check does not reinstall Homebrew packages or install new developer tooling.

@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
-import {createReadStream,createWriteStream} from 'node:fs';
-import {chmod,copyFile,lstat,mkdir,mkdtemp,readFile,readdir,readlink,realpath,rename,rm,symlink,utimes,writeFile} from 'node:fs/promises';
+import {constants,createReadStream,createWriteStream} from 'node:fs';
+import {access,chmod,copyFile,lstat,mkdir,mkdtemp,readFile,readdir,readlink,realpath,rename,rm,symlink,utimes,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {pipeline} from 'node:stream/promises';
@@ -8,10 +8,30 @@ import {fileURLToPath} from 'node:url';
 import {createGzip} from 'node:zlib';
 
 export const root=path.resolve(import.meta.dirname,'..');
-export const pins={node:'26.10.0',pnpm:'12.10.1'};
+function toolPins(config){
+  const result={};
+  let tools=false;
+  for(const line of config.split(/\r?\n/)){
+    if(/^\s*\[/.test(line)){tools=/^\s*\[tools\]\s*(?:#.*)?$/.test(line);continue;}
+    if(!tools)continue;
+    const entry=line.match(/^\s*(node|pnpm)\s*=/);
+    if(!entry)continue;
+    const name=entry[1];
+    if(Object.hasOwn(result,name))throw new Error(`mise.toml [tools].${name} must be declared exactly once`);
+    const value=line.match(/^\s*(?:node|pnpm)\s*=\s*(["'])((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\1\s*(?:#.*)?$/);
+    if(!value)throw new Error(`mise.toml [tools].${name} must be a quoted exact version (major.minor.patch), not a range, alias, or tool options`);
+    result[name]=value[2];
+  }
+  for(const name of ['node','pnpm'])if(!Object.hasOwn(result,name))throw new Error(`mise.toml is missing a quoted exact [tools].${name} version`);
+  return result;
+}
+export async function readToolPins(file=path.join(root,'mise.toml')){
+  return toolPins(await readFile(file,'utf8'));
+}
+export const pins=await readToolPins();
 const inputs=path.join(root,'.build','formula-inputs');
 const sourceDirectories=['src','tests','scripts','bin'];
-const sourceNames=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml','mise.toml','tsconfig.json','electron.vite.config.ts','README.md','LLM_README.md'];
+const sourceNames=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml','mise.toml','tsconfig.json','electron.vite.config.ts','README.md','LLM_README.md','defaults.toml'];
 const forbidden=new Set(['.build','dist','out','node_modules','.git']);
 
 export function run(executable,args,{cwd=root,env=process.env,capture=false}={}){
@@ -39,20 +59,54 @@ async function exists(file){
 }
 
 export async function discoverTools(cwd=root){
-  const env={...process.env,MISE_AUTO_INSTALL:'false'};
-  const mise=process.env.DOCM_FORMULA_MISE||'mise';
-  const miseDataDir=process.env.MISE_DATA_DIR||JSON.parse(await run(mise,['doctor','--json'],{cwd,env,capture:true})).dirs?.data;
-  if(!miseDataDir||!path.isAbsolute(miseDataDir)||!(await lstat(await realpath(miseDataDir))).isDirectory())throw new Error('An existing mise data directory is required');
-  const tools={};
-  for(const [name,version] of Object.entries(pins)){
-    const executable=await run(mise,['which',name],{cwd,env,capture:true});
-    if(!path.isAbsolute(executable)||!inside(await realpath(miseDataDir),await realpath(executable)))throw new Error(`${name} must already exist in the selected mise data directory`);
-    const actual=await run(executable,['--version'],{cwd,env,capture:true});
-    if(actual.replace(/^v/,'')!==version)throw new Error(`Expected existing ${name} ${version}, found ${actual}`);
-    tools[name]=executable;
-  }
   if(process.platform!=='darwin'||process.arch!=='arm64')throw new Error('Formula preparation/build requires native macOS arm64');
-  return {...tools,mise,miseDataDir};
+  const node=await realpath(process.execPath);
+  let pnpm;
+  for(const directory of (process.env.PATH||'').split(path.delimiter)){
+    const candidate=path.resolve(cwd,directory,'pnpm');
+    try{
+      await access(candidate,constants.X_OK);
+      if(!(await lstat(await realpath(candidate))).isFile())continue;
+      pnpm=await realpath(candidate);
+      break;
+    }catch(error){if(error.code!=='ENOENT'&&error.code!=='ENOTDIR'&&error.code!=='EACCES')throw error;}
+  }
+  if(!pnpm)throw new Error(`An existing pnpm ${pins.pnpm} executable is required on PATH; preparation does not install tools`);
+  if(/^mise(?:\.exe)?$/.test(path.basename(pnpm)))throw new Error('PATH must provide an actual pnpm executable, not a mise shim');
+  if(pnpm.split(path.sep).includes('shims'))throw new Error('PATH must provide an actual pnpm executable, not a tool-manager shim');
+  if(pnpm.split(path.sep).includes('corepack'))throw new Error('PATH must provide an installed pnpm executable, not a Corepack proxy that can install tools');
+  const env={...process.env,PATH:[path.dirname(node),process.env.PATH||''].join(path.delimiter),npm_config_manage_package_manager_versions:'false',npm_config_package_manager_strict:'false'};
+  const tools={node,pnpm};
+  for(const [name,executable] of Object.entries(tools)){
+    const actual=await run(executable,['--version'],{cwd,env,capture:true});
+    if(actual.replace(/^v/,'')!==pins[name])throw new Error(`Expected existing ${name} ${pins[name]}, found ${actual}`);
+  }
+  return tools;
+}
+
+async function releaseResponse(url){
+  const response=await fetch(url);
+  if(!response.ok)throw new Error(`Cannot fetch formula tool release input ${url}: HTTP ${response.status}`);
+  if(response.url!==url)throw new Error(`Unexpected redirect for formula tool release input ${url}: ${response.url}`);
+  return response;
+}
+
+async function toolResources(){
+  const nodeFilename=`node-v${pins.node}-darwin-arm64.tar.xz`;
+  const nodeBase=`https://nodejs.org/dist/v${pins.node}/`;
+  const checksums=await (await releaseResponse(`${nodeBase}SHASUMS256.txt`)).text();
+  const matches=checksums.split(/\r?\n/).map(line=>line.match(/^([a-fA-F0-9]{64})\s+\*?(\S+)$/)).filter(match=>match?.[2]===nodeFilename);
+  if(matches.length!==1)throw new Error(`Official Node ${pins.node} checksums must identify exactly ${nodeFilename}`);
+  const metadata=await (await releaseResponse(`https://registry.npmjs.org/pnpm/${pins.pnpm}`)).json();
+  const pnpmUrl=`https://registry.npmjs.org/pnpm/-/pnpm-${pins.pnpm}.tgz`;
+  if(metadata.name!=='pnpm'||metadata.version!==pins.pnpm||metadata.dist?.tarball!==pnpmUrl)throw new Error(`Registry metadata must identify the official pnpm ${pins.pnpm} package archive`);
+  const integrity=metadata.dist?.integrity;
+  if(typeof integrity!=='string'||!/^sha512-[A-Za-z0-9+/]{86}==$/.test(integrity))throw new Error(`Official pnpm ${pins.pnpm} metadata must include a SHA-512 package integrity`);
+  const upstream=createHash('sha512'),sha256=createHash('sha256');
+  const response=await releaseResponse(pnpmUrl);
+  for await(const chunk of response.body){upstream.update(chunk);sha256.update(chunk);}
+  if(`sha512-${upstream.digest('base64')}`!==integrity)throw new Error(`Official pnpm ${pins.pnpm} package archive failed registry integrity validation`);
+  return [{name:'node',url:`${nodeBase}${nodeFilename}`,sha256:matches[0][1].toLowerCase()},{name:'pnpm',url:pnpmUrl,sha256:sha256.digest('hex')}];
 }
 
 export async function lockedElectron(project=root){
@@ -158,8 +212,8 @@ async function storeResource(stage,tools){
   const lock=await readFile(path.join(root,'pnpm-lock.yaml'));
   const workspace=await readFile(path.join(root,'pnpm-workspace.yaml'));
   const metadata={schema:1,lockSha256:digest(lock),workspaceSha256:digest(workspace),...pins,platform:'darwin',arch:'arm64'};
-  // A helper change can alter acquisition semantics even if the lock is unchanged.
-  const key=digest(JSON.stringify(metadata)+await fileDigest(fileURLToPath(import.meta.url)));
+  // Only acquisition changes invalidate this cache; source/release helpers do not.
+  const key=digest(JSON.stringify(metadata)+storeResource.toString());
   const receipt=path.join(inputs,`store-${key}.json`);
   if(await exists(receipt)){
     const result=JSON.parse(await readFile(receipt,'utf8'));
@@ -173,7 +227,7 @@ async function storeResource(stage,tools){
   // A fresh metadata cache carries pnpm's supply-chain policy inputs alongside
   // package content, without copying any unrelated user cache or credentials.
   const cache=path.join(store,'.docm-pnpm-cache');
-  await run(tools.pnpm,['fetch','--ignore-scripts','--ignore-pnpmfile','--store-dir',store,`--config.cache-dir=${cache}`,'--config.side-effects-cache=false','--config.manage-package-manager-versions=false','--config.package-manager-strict=false','--userconfig',config],{cwd:fetch,env:{...process.env,CI:'1',MISE_AUTO_INSTALL:'false',npm_config_ignore_scripts:'true'}});
+  await run(tools.pnpm,['fetch','--ignore-scripts','--ignore-pnpmfile','--store-dir',store,`--config.cache-dir=${cache}`,'--config.side-effects-cache=false','--config.manage-package-manager-versions=false','--config.package-manager-strict=false','--userconfig',config],{cwd:fetch,env:{...process.env,PATH:[path.dirname(tools.node),process.env.PATH||''].join(path.delimiter),CI:'1',npm_config_ignore_scripts:'true'}});
   if(!lock.equals(await readFile(path.join(fetch,'pnpm-lock.yaml'))))throw new Error('pnpm fetch changed the frozen lockfile');
   // pnpm's project registry points to the fetch staging directory. It is local
   // cache bookkeeping, not package content; never ship those host-path links.
@@ -186,6 +240,7 @@ async function storeResource(stage,tools){
 
 export async function prepare(){
   const tools=await discoverTools();
+  const releases=await toolResources();
   const metadata=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
   if(metadata.name!=='docm'||metadata.version!=='0.1.0')throw new Error('Expected docm version 0.1.0');
   const version=await lockedElectron();
@@ -204,7 +259,7 @@ export async function prepare(){
     const runtime=await archive(electron,'electron',`electron-${version}-darwin-arm64`);
     const source=await sourceSnapshot(stage,metadata.version);
     const sourceArchive=await archive(source.directory,`docm-${metadata.version}`,`docm-${metadata.version}-source`);
-    const manifest={schema:1,project:root,version:metadata.version,source:sourceArchive,resources:[{name:'pnpm-store',...pnpm},{name:'electron',...runtime}],tools:{...pins,miseDataDir:tools.miseDataDir},sourceFiles:source.sourceFiles};
+    const manifest={schema:1,project:root,version:metadata.version,source:sourceArchive,resources:[{name:'pnpm-store',...pnpm},{name:'electron',...runtime}],toolResources:releases,tools:{...pins},sourceFiles:source.sourceFiles};
     const destination=path.join(inputs,'manifest.json'),bytes=JSON.stringify(manifest,null,2)+'\n';
     if(!await exists(destination)||await readFile(destination,'utf8')!==bytes){
       await writeFile(path.join(stage,'manifest.json'),bytes);

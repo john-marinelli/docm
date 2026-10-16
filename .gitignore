@@ -6,9 +6,8 @@ dist/
 /.formula-build/
 /.formula-store/
 /.formula-electron/
-/.formula-mise-cache/
-/.formula-mise-state/
-/.formula-empty-config.toml
+/.formula-node/
+/.formula-pnpm/
 
 # Local configuration and environment files
 .env

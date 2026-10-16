@@ -13,11 +13,12 @@ run = "pnpm run test"
 [tasks."notices:prepare"]
 run = "pnpm run notices:prepare"
 [tasks.package]
-depends = ["build", "notices:prepare"]
 run = "pnpm run package"
 [tasks.smoke]
 depends = ["build"]
 run = "pnpm run smoke"
+[tasks."build:smoke"]
+run = "pnpm run build:smoke"
 [tasks."package:smoke"]
 run = "pnpm run package:smoke"
 [tasks."formula:build"]
