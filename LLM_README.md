@@ -97,6 +97,8 @@ The pinned pnpm 12 resource is the official `@pnpm/exe.darwin-arm64` archive, wh
 
 [`scripts/build-smoke.mjs`](scripts/build-smoke.mjs) stages a fresh source tree and frozen dependencies, reuses the pinned Node, and downloads/stages the exact checksummed pnpm resource used by the formula. It verifies the resource's package identity and executable version, then uses that executable for the complete source build with mise absent from PATH and a fresh HOME. It checks the app signature and verifies version/PDF text through the packaged CLI with no developer tools on its runtime PATH. Evidence is written under `.build/build-smoke`; staged pnpm is temporary, and no global tooling or installed Homebrew package is changed.
 
+Frozen-source packaging removes inherited `CSC_*`/`APPLE_*` variables, disables signing-identity discovery, and explicitly forces ad-hoc signing (`mac.identity=-`) with notarization off. Only that packaging subprocess sets `CSC_FOR_PULL_REQUEST=true`; no workflow-wide override or Apple signing credentials are needed. This allows the modified Electron bundle to be re-signed on PR builds. The smoke supplies `GITHUB_BASE_REF` when absent so local/main runs exercise the same PR signing guard and strict signature check. electron-builder still emits its generic PR-signing security warning.
+
 ## Releases and public Homebrew distribution
 
 Everything lives in `john-marinelli/docm`: source, Actions workflows, GitHub Release assets, and the public tap's `Formula/docm.rb`. The application version comes from `package.json`; `scripts/version.mjs` supplies explicit stable SemVer bumps and tag checks, and the CLI bundles that same version. Tool versions still come from `mise.toml`. Version commands never commit, tag, or push automatically.

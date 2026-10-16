@@ -72,6 +72,8 @@ export async function smokeSource(inputs,{artifacts=path.join(root,'.build','bui
     const buildPath=[...new Set([path.dirname(tools.node),path.dirname(tools.pnpm),'/usr/bin','/bin','/usr/sbin','/sbin'])].join(path.delimiter);
     for(const directory of buildPath.split(path.delimiter))await assert.rejects(access(path.join(directory,'mise'),constants.X_OK),error=>error.code==='ENOENT');
     const env=isolatedEnvironment(home,buildPath);
+    // Exercise electron-builder's PR signing gate even on local and main-branch runs.
+    env.GITHUB_BASE_REF||='main';
     await run('/usr/bin/tar',['-xf',inputs.source.archive,'-C',stage],{env});
     const source=path.join(stage,`docm-${inputs.version}`);
     for(const [name,directory] of [['pnpm-store','.formula-store'],['electron','.formula-electron']]){
@@ -83,7 +85,7 @@ export async function smokeSource(inputs,{artifacts=path.join(root,'.build','bui
     console.error('Building clean source with the checksummed pnpm resource, pinned Node, and macOS system tools on PATH');
     await run(tools.pnpm,['run','formula:build'],{cwd:source,env});
     const result=await verifyPackagedCli(path.join(source,'dist','mac-arm64','Docm.app'),{stage,artifacts,version:inputs.version});
-    const report={tools:inputs.tools,source:inputs.source.sha256,buildPath,pnpmResource:inputs.toolResources.find(item=>item.name==='pnpm'),checks:{pnpmResourceExecuted:true,miseAbsentFromBuildPath:true,freshHome:true,cleanSourceBuild:true,deepSignature:true,packagedCliWithoutDeveloperTools:true,packageVersion:true,pdfContents:true},...result};
+    const report={tools:inputs.tools,source:inputs.source.sha256,buildPath,pnpmResource:inputs.toolResources.find(item=>item.name==='pnpm'),checks:{pnpmResourceExecuted:true,miseAbsentFromBuildPath:true,freshHome:true,cleanSourceBuild:true,pullRequestSigning:true,deepSignature:true,packagedCliWithoutDeveloperTools:true,packageVersion:true,pdfContents:true},...result};
     await writeFile(path.join(artifacts,'report.json'),JSON.stringify(report,null,2)+'\n');console.error(JSON.stringify(report,null,2));return report;
   }finally{await rm(stage,{recursive:true,force:true});}
 }

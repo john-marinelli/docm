@@ -31,7 +31,8 @@ await validateElectron(electron,electronVersion);
 const state=path.join(root,'.formula-build');
 await mkdir(state,{recursive:true});
 const npmrc=path.join(state,'empty.npmrc');await writeFile(npmrc,'');
-const env={...process.env,CI:'1',ELECTRON_SKIP_BINARY_DOWNLOAD:'1',ELECTRON_BUILDER_CACHE:path.join(state,'electron-builder-cache'),CSC_IDENTITY_AUTO_DISCOVERY:'false',npm_config_ignore_scripts:'true',npm_config_offline:'true'};
+const env={...process.env,CI:'1',ELECTRON_SKIP_BINARY_DOWNLOAD:'1',ELECTRON_BUILDER_CACHE:path.join(state,'electron-builder-cache'),npm_config_ignore_scripts:'true',npm_config_offline:'true'};
+for(const key of Object.keys(env))if(key.startsWith('CSC_')||key.startsWith('APPLE_'))delete env[key];
 delete env.ELECTRON_OVERRIDE_DIST_PATH;
 delete env.ELECTRON_RUN_AS_NODE;
 // Dependency tarballs (including native optional packages) come solely from the
@@ -58,7 +59,8 @@ for(const entry of await tree(dist)){
   await run('/usr/bin/install_name_tool',['-id',`@rpath/${path.posix.basename(id)}`,library]);
 }
 await run(tools.pnpm,['run','typecheck'],{env});
-await run(tools.pnpm,['run','package'],{env});
+// PR signing is enabled only here, without credentials and with ad-hoc identity forced.
+await run(tools.pnpm,['run','package','--config.mac.identity=-','--config.mac.notarize=false'],{env:{...env,CSC_IDENTITY_AUTO_DISCOVERY:'false',CSC_FOR_PULL_REQUEST:'true'}});
 const app=path.join(root,'dist','mac-arm64','Docm.app');
 if(!(await lstat(app)).isDirectory()||(await lstat(app)).isSymbolicLink())throw new Error('Source packaging did not produce dist/mac-arm64/Docm.app');
 console.error(`Built docm from clean frozen source: ${app}`);
