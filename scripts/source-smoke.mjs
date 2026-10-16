@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {constants} from 'node:fs';
-import {access,mkdir,mkdtemp,readFile,realpath,rm,writeFile} from 'node:fs/promises';
+import {constants,createWriteStream} from 'node:fs';
+import {access,chmod,mkdir,mkdtemp,readFile,realpath,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
 import {getDocument} from 'pdfjs-dist/legacy/build/pdf.mjs';
-import {discoverTools,root,run} from './prepare-formula.mjs';
+import {discoverTools,fileDigest,pnpmResourceUrl,root,run} from './prepare-formula.mjs';
 
 export function isolatedEnvironment(home,buildPath){
   const env={...process.env,HOME:home,PATH:buildPath,CI:'1',XDG_CONFIG_HOME:path.join(home,'.config'),XDG_CACHE_HOME:path.join(home,'.cache'),XDG_DATA_HOME:path.join(home,'.local','share')};
@@ -42,11 +44,31 @@ export async function verifyPackagedCli(bundle,{stage,artifacts,version}){
   }finally{await loading.destroy();}
   return {pdf,pages,version};
 }
+async function stagePnpmResource(inputs,stage,env){
+  const resource=inputs.toolResources?.find(item=>item.name==='pnpm');
+  assert(resource,'Smoke builds require the pinned pnpm resource');
+  assert.equal(resource.url,pnpmResourceUrl(inputs.tools.pnpm));
+  const archive=path.join(stage,'pnpm-resource.tgz');
+  const response=await fetch(resource.url);
+  if(!response.ok||!response.body)throw new Error(`Cannot fetch pinned pnpm resource: HTTP ${response.status}`);
+  await pipeline(Readable.fromWeb(response.body),createWriteStream(archive,{flags:'wx'}));
+  assert.equal(await fileDigest(archive),resource.sha256,'Pinned pnpm resource checksum mismatch');
+  const destination=path.join(stage,'.formula-pnpm');await mkdir(destination);
+  await run('/usr/bin/tar',['-xf',archive,'--strip-components','1','-C',destination],{env});
+  const metadata=JSON.parse(await readFile(path.join(destination,'package.json'),'utf8'));
+  assert.equal(metadata.name,'@pnpm/exe.darwin-arm64');
+  assert.equal(metadata.version,inputs.tools.pnpm);
+  const executable=path.join(destination,'pnpm');await chmod(executable,0o755);
+  assert.equal(await run(executable,['--version'],{cwd:stage,env,capture:true}),inputs.tools.pnpm);
+  return executable;
+}
 export async function smokeSource(inputs,{artifacts=path.join(root,'.build','build-smoke')}={}){
   const tools=await discoverTools();
   const stage=await realpath(await mkdtemp(path.join(tmpdir(),'docm node pnpm build ')));
   try{
     const home=path.join(stage,'home');await mkdir(home);
+    const bootstrapPath=[path.dirname(tools.node),'/usr/bin','/bin','/usr/sbin','/sbin'].join(path.delimiter);
+    tools.pnpm=await stagePnpmResource(inputs,stage,isolatedEnvironment(home,bootstrapPath));
     const buildPath=[...new Set([path.dirname(tools.node),path.dirname(tools.pnpm),'/usr/bin','/bin','/usr/sbin','/sbin'])].join(path.delimiter);
     for(const directory of buildPath.split(path.delimiter))await assert.rejects(access(path.join(directory,'mise'),constants.X_OK),error=>error.code==='ENOENT');
     const env=isolatedEnvironment(home,buildPath);
@@ -58,10 +80,10 @@ export async function smokeSource(inputs,{artifacts=path.join(root,'.build','bui
       await run('/usr/bin/tar',['-xf',resource.archive,'--strip-components','1','-C',destination],{env});
     }
     env.DOCM_FORMULA_STORE=path.join(source,'.formula-store');env.DOCM_FORMULA_ELECTRON=path.join(source,'.formula-electron');
-    console.error('Building clean source with only existing Node/pnpm and macOS system tools on PATH');
+    console.error('Building clean source with the checksummed pnpm resource, pinned Node, and macOS system tools on PATH');
     await run(tools.pnpm,['run','formula:build'],{cwd:source,env});
     const result=await verifyPackagedCli(path.join(source,'dist','mac-arm64','Docm.app'),{stage,artifacts,version:inputs.version});
-    const report={tools:inputs.tools,source:inputs.source.sha256,buildPath,checks:{miseAbsentFromBuildPath:true,freshHome:true,cleanSourceBuild:true,deepSignature:true,packagedCliWithoutDeveloperTools:true,packageVersion:true,pdfContents:true},...result};
+    const report={tools:inputs.tools,source:inputs.source.sha256,buildPath,pnpmResource:inputs.toolResources.find(item=>item.name==='pnpm'),checks:{pnpmResourceExecuted:true,miseAbsentFromBuildPath:true,freshHome:true,cleanSourceBuild:true,deepSignature:true,packagedCliWithoutDeveloperTools:true,packageVersion:true,pdfContents:true},...result};
     await writeFile(path.join(artifacts,'report.json'),JSON.stringify(report,null,2)+'\n');console.error(JSON.stringify(report,null,2));return report;
   }finally{await rm(stage,{recursive:true,force:true});}
 }

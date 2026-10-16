@@ -32,10 +32,9 @@ ${blocks}
     resource("electron").stage(buildpath/".formula-electron")
     resource("node").stage(buildpath/".formula-node")
     resource("pnpm").stage(buildpath/".formula-pnpm")
-    (buildpath/".formula-pnpm/bin/pnpm.cjs").chmod 0755
-    (buildpath/".formula-pnpm/bin/pnpm").make_symlink "pnpm.cjs"
+    (buildpath/".formula-pnpm/pnpm").chmod 0755
     ENV.prepend_path "PATH", buildpath/".formula-node/bin"
-    ENV.prepend_path "PATH", buildpath/".formula-pnpm/bin"
+    ENV.prepend_path "PATH", buildpath/".formula-pnpm"
     ENV["DOCM_FORMULA_STORE"] = (buildpath/".formula-store").to_s
     ENV["DOCM_FORMULA_ELECTRON"] = (buildpath/".formula-electron").to_s
     ENV["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"

@@ -53,6 +53,8 @@ jobs:
         run: mise run release:prepare -- --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY"
       - name: Build and exercise the exact candidate assets
         run: mise run release:smoke
+      - name: Install the local candidate through Homebrew before publication
+        run: mise run release:homebrew -- --local-assets
       - name: Retain immutable release candidate
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -68,6 +70,15 @@ jobs:
         with:
           name: release-source-evidence-${{ github.run_attempt }}
           path: .build/release-smoke/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Retain candidate Homebrew evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-candidate-homebrew-evidence-${{ github.run_attempt }}
+          path: .build/release-homebrew/
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30

@@ -92,15 +92,19 @@ async function releaseResponse(url){
   return response;
 }
 
+export function pnpmResourceUrl(version){
+  return `https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-${version}.tgz`;
+}
+
 async function toolResources(){
   const nodeFilename=`node-v${pins.node}-darwin-arm64.tar.xz`;
   const nodeBase=`https://nodejs.org/dist/v${pins.node}/`;
   const checksums=await (await releaseResponse(`${nodeBase}SHASUMS256.txt`)).text();
   const matches=checksums.split(/\r?\n/).map(line=>line.match(/^([a-fA-F0-9]{64})\s+\*?(\S+)$/)).filter(match=>match?.[2]===nodeFilename);
   if(matches.length!==1)throw new Error(`Official Node ${pins.node} checksums must identify exactly ${nodeFilename}`);
-  const metadata=await (await releaseResponse(`https://registry.npmjs.org/pnpm/${pins.pnpm}`)).json();
-  const pnpmUrl=`https://registry.npmjs.org/pnpm/-/pnpm-${pins.pnpm}.tgz`;
-  if(metadata.name!=='pnpm'||metadata.version!==pins.pnpm||metadata.dist?.tarball!==pnpmUrl)throw new Error(`Registry metadata must identify the official pnpm ${pins.pnpm} package archive`);
+  const metadata=await (await releaseResponse(`https://registry.npmjs.org/@pnpm%2Fexe.darwin-arm64/${pins.pnpm}`)).json();
+  const pnpmUrl=pnpmResourceUrl(pins.pnpm);
+  if(metadata.name!=='@pnpm/exe.darwin-arm64'||metadata.version!==pins.pnpm||metadata.dist?.tarball!==pnpmUrl)throw new Error(`Registry metadata must identify the official native darwin-arm64 pnpm ${pins.pnpm} archive`);
   const integrity=metadata.dist?.integrity;
   if(typeof integrity!=='string'||!/^sha512-[A-Za-z0-9+/]{86}==$/.test(integrity))throw new Error(`Official pnpm ${pins.pnpm} metadata must include a SHA-512 package integrity`);
   const upstream=createHash('sha512'),sha256=createHash('sha256');

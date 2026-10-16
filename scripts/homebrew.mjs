@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { pins } from './prepare-formula.mjs';
+import { pins, pnpmResourceUrl } from './prepare-formula.mjs';
 import { renderFormula } from './formula.mjs';
 import { readVersion, validateTag } from './version.mjs';
 
@@ -129,7 +129,7 @@ async function distribution() {
   if (!Array.isArray(inputs.toolResources) || inputs.toolResources.length !== 2 || inputs.toolResources.map(item => item?.name).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'expected exactly node and pnpm tool resources; regenerate formula inputs');
   const toolUrls = {
     node: `https://nodejs.org/dist/v${tools.node}/node-v${tools.node}-darwin-arm64.tar.xz`,
-    pnpm: `https://registry.npmjs.org/pnpm/-/pnpm-${tools.pnpm}.tgz`,
+    pnpm: pnpmResourceUrl(tools.pnpm),
   };
   for (const item of inputs.toolResources) {
     if (Object.keys(item).sort().join(',') !== 'name,sha256,url' || item.url !== toolUrls[item.name] || !validHash(item.sha256)) conflict(inputsPath, 'invalid official pinned tool resource URL/checksum');

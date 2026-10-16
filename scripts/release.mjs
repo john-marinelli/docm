@@ -1,8 +1,8 @@
 import {constants} from 'node:fs';
 import {copyFile,lstat,mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {fileDigest,prepare,root} from './prepare-formula.mjs';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {fileDigest,pnpmResourceUrl,prepare,root} from './prepare-formula.mjs';
 import {renderFormula} from './formula.mjs';
 import {readVersion,validateTag} from './version.mjs';
 
@@ -38,7 +38,7 @@ function validateManifest(manifest){
     exact(asset,['name','filename','sha256'],'asset');
     if(asset.filename!==filename(asset.name,manifest.version)||!validHash(asset.sha256))throw new Error(`Invalid asset filename/checksum: ${asset.name}`);
   }
-  const urls={node:`https://nodejs.org/dist/v${manifest.tools.node}/node-v${manifest.tools.node}-darwin-arm64.tar.xz`,pnpm:`https://registry.npmjs.org/pnpm/-/pnpm-${manifest.tools.pnpm}.tgz`};
+  const urls={node:`https://nodejs.org/dist/v${manifest.tools.node}/node-v${manifest.tools.node}-darwin-arm64.tar.xz`,pnpm:pnpmResourceUrl(manifest.tools.pnpm)};
   if(!Array.isArray(manifest.toolResources)||manifest.toolResources.length!==2||manifest.toolResources.map(item=>item?.name).join(',')!=='node,pnpm')throw new Error('Release requires exactly official node and pnpm resources in order');
   for(const resource of manifest.toolResources){
     exact(resource,['name','url','sha256'],'tool resource');
@@ -46,9 +46,9 @@ function validateManifest(manifest){
   }
   return manifest;
 }
-function releaseFormula(manifest){
+export function releaseFormula(manifest,{assetDirectory}={}){
   const base=`https://github.com/${manifest.repository}/releases/download/${manifest.tag}/`;
-  const [source,...assets]=manifest.assets.map(asset=>({name:asset.name,url:base+asset.filename,sha256:asset.sha256}));
+  const [source,...assets]=manifest.assets.map(asset=>({name:asset.name,url:assetDirectory?pathToFileURL(path.join(assetDirectory,asset.filename)).href:base+asset.filename,sha256:asset.sha256}));
   // The entire receipt is portable: it contains no source checkout, cache or tap paths.
   return renderFormula({version:manifest.version,homepage:`https://github.com/${manifest.repository}`,source,resources:[...assets,...manifest.toolResources],receipt:manifest});
 }
