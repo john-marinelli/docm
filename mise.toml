@@ -35,3 +35,16 @@ run = "pnpm run formula:smoke"
 
 [tasks."bootstrap:electron"]
 run = "pnpm exec install-electron"
+
+[tasks."release:version"]
+run = "pnpm run release:version"
+[tasks."release:check"]
+run = "pnpm run release:check"
+[tasks."release:prepare"]
+run = "pnpm run release:prepare"
+[tasks."release:smoke"]
+run = "pnpm run release:smoke"
+[tasks."release:homebrew"]
+run = "pnpm run release:homebrew"
+[tasks."release:github"]
+run = "pnpm run release:github"

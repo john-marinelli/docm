@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import packageMetadata from '../../package.json' with { type: 'json' };
 
 export type CliRequest =
   | { mode: 'preview'; sourcePath: string; configPath?: string }
@@ -8,7 +9,7 @@ export function parseCliArgs(argv: string[]): CliRequest {
   let request: CliRequest | undefined;
   const command = new Command('docm')
     .description('Render Markdown to PDF with an offline desktop live preview')
-    .version('0.1.0')
+    .version(packageMetadata.version)
     .argument('[filename]', 'Markdown document to preview')
     .option('--config <file>', 'additional TOML theme')
     .allowExcessArguments(false)

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommanderError } from 'commander';
 import { parseCliArgs } from '../src/main/cli.js';
+import packageMetadata from '../package.json' with { type: 'json' };
 
 beforeEach(() => { vi.spyOn(process.stderr, 'write').mockImplementation(() => true); });
 afterEach(() => { vi.restoreAllMocks(); });
@@ -35,6 +36,11 @@ describe('CLI document requests', () => {
     try { parseCliArgs(argv); } catch (error) { failure = error; }
     expect(failure).toBeInstanceOf(CommanderError);
     expect((failure as CommanderError).exitCode).toBe(2);
+  });
+
+  it('reports the package version rather than an independent CLI version', () => {
+    expect(() => parseCliArgs(['--version'])).toThrow(CommanderError);
+    expect(process.stderr.write).toHaveBeenCalledWith(`${packageMetadata.version}\n`);
   });
 
   it.each([['--help'], ['--version'], ['r', '--help']].map(argv => ({ argv })))('prints help/version on stderr and exits successfully: $argv', ({ argv }) => {

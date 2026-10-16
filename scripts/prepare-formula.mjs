@@ -6,6 +6,7 @@ import {spawn} from 'node:child_process';
 import {pipeline} from 'node:stream/promises';
 import {fileURLToPath} from 'node:url';
 import {createGzip} from 'node:zlib';
+import {readVersion} from './version.mjs';
 
 export const root=path.resolve(import.meta.dirname,'..');
 function toolPins(config){
@@ -242,7 +243,8 @@ export async function prepare(){
   const tools=await discoverTools();
   const releases=await toolResources();
   const metadata=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
-  if(metadata.name!=='docm'||metadata.version!=='0.1.0')throw new Error('Expected docm version 0.1.0');
+  if(metadata.name!=='docm')throw new Error('Expected the docm package');
+  metadata.version=await readVersion();
   const version=await lockedElectron();
   const electronPackage=await realpath(path.join(root,'node_modules','electron'));
   const electronMetadata=JSON.parse(await readFile(path.join(electronPackage,'package.json'),'utf8'));

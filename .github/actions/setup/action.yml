@@ -1,0 +1,17 @@
+name: Set up docm
+description: Install mise-pinned Node/pnpm and optional frozen project dependencies
+inputs:
+  dependencies:
+    description: Install project dependencies
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      with:
+        version: "2026.10.2"
+        add_shims_to_path: "false"
+    - name: Install frozen project dependencies
+      if: inputs.dependencies == 'true'
+      shell: bash
+      run: mise exec -- pnpm install --frozen-lockfile

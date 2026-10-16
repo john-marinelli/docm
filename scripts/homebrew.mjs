@@ -6,6 +6,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pins } from './prepare-formula.mjs';
+import { renderFormula } from './formula.mjs';
+import { readVersion, validateTag } from './version.mjs';
 
 const project = await realpath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const build = path.join(project, '.build');
@@ -20,7 +22,6 @@ const formulaName = `${tapName}/docm`;
 const brewEnv = { ...process.env, HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_INSTALL_CLEANUP: '1', HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: '1' };
 delete brewEnv.HOMEBREW_CASK_OPTS;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-const ruby = value => `'${value.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`;
 const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validIdentity = value => value && Number.isSafeInteger(value.dev) && Number.isSafeInteger(value.ino);
 
@@ -117,12 +118,18 @@ async function readManifest() {
 }
 async function distribution() {
   const inputs = await readJson(inputsPath);
-  if (inputs.schema !== 1 || inputs.project !== project || inputs.version !== '0.1.0' || inputs.tools?.node !== pins.node || inputs.tools?.pnpm !== pins.pnpm || Object.keys(inputs.tools).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'invalid source/resource/tool contract; regenerate formula inputs');
+  try { validateTag(`v${inputs.version}`, inputs.version); } catch { conflict(inputsPath, 'invalid stable application version'); }
+  const tools = pins;
+  if (inputs.version !== await readVersion()) conflict(inputsPath, 'application version changed; regenerate formula inputs for explicit refresh');
+  if (inputs.schema !== 1 || inputs.project !== project || inputs.tools?.node !== tools.node || inputs.tools?.pnpm !== tools.pnpm || Object.keys(inputs.tools).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'invalid source/resource/tool contract; regenerate formula inputs');
+  for (const version of Object.values(tools)) {
+    try { validateTag(`v${version}`, version); } catch { conflict(inputsPath, 'invalid pinned tool version'); }
+  }
   if (!Array.isArray(inputs.resources) || inputs.resources.length !== 2 || inputs.resources.map(item => item.name).sort().join(',') !== 'electron,pnpm-store') conflict(inputsPath, 'expected exactly electron and pnpm-store resources');
   if (!Array.isArray(inputs.toolResources) || inputs.toolResources.length !== 2 || inputs.toolResources.map(item => item?.name).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'expected exactly node and pnpm tool resources; regenerate formula inputs');
   const toolUrls = {
-    node: `https://nodejs.org/dist/v${pins.node}/node-v${pins.node}-darwin-arm64.tar.xz`,
-    pnpm: `https://registry.npmjs.org/pnpm/-/pnpm-${pins.pnpm}.tgz`,
+    node: `https://nodejs.org/dist/v${tools.node}/node-v${tools.node}-darwin-arm64.tar.xz`,
+    pnpm: `https://registry.npmjs.org/pnpm/-/pnpm-${tools.pnpm}.tgz`,
   };
   for (const item of inputs.toolResources) {
     if (Object.keys(item).sort().join(',') !== 'name,sha256,url' || item.url !== toolUrls[item.name] || !validHash(item.sha256)) conflict(inputsPath, 'invalid official pinned tool resource URL/checksum');
@@ -133,62 +140,13 @@ async function distribution() {
   }
   const inputsSha256 = sha(JSON.stringify(inputs));
   const provenance = { schema: 1, project, version: inputs.version, inputsSha256, source: inputs.source, resources: inputs.resources, tools: inputs.tools, toolResources: inputs.toolResources };
-  const resources = [
-    ...inputs.resources.map(item => ({ ...item, url: pathToFileURL(item.archive).href })),
-    ...inputs.toolResources,
-  ].map(item => `  resource ${ruby(item.name)} do\n    url ${ruby(item.url)}\n    sha256 ${ruby(item.sha256)}\n  end\n`).join('\n');
-  const formula = `class Docm < Formula
-  desc "Offline Markdown to PDF desktop application"
-  homepage ${ruby(pathToFileURL(project + path.sep).href)}
-  url ${ruby(pathToFileURL(inputs.source.archive).href)}
-  version ${ruby(inputs.version)}
-  sha256 ${ruby(inputs.source.sha256)}
-  license "MIT"
-
-  depends_on macos: :ventura
-  depends_on arch: :arm64
-  preserve_rpath
-
-${resources}
-  deny_network_access!
-
-  def install
-    resource("pnpm-store").stage(buildpath/".formula-store")
-    resource("electron").stage(buildpath/".formula-electron")
-    resource("node").stage(buildpath/".formula-node")
-    resource("pnpm").stage(buildpath/".formula-pnpm")
-    (buildpath/".formula-pnpm/bin/pnpm.cjs").chmod 0755
-    (buildpath/".formula-pnpm/bin/pnpm").make_symlink "pnpm.cjs"
-    ENV.prepend_path "PATH", buildpath/".formula-node/bin"
-    ENV.prepend_path "PATH", buildpath/".formula-pnpm/bin"
-    ENV["DOCM_FORMULA_STORE"] = (buildpath/".formula-store").to_s
-    ENV["DOCM_FORMULA_ELECTRON"] = (buildpath/".formula-electron").to_s
-    ENV["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
-    ENV["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
-    system "pnpm", "run", "formula:build"
-    libexec.install "dist/mac-arm64/Docm.app"
-    (libexec/"docm-source-receipt.json").write ${ruby(JSON.stringify(provenance) + '\n')}
-    bin.install_symlink libexec/"Docm.app/Contents/Resources/bin/docm"
-  end
-
-  def caveats
-    <<~EOS
-      This private local source build uses an upstream prebuilt Electron runtime.
-      Docm.app has only an ad-hoc signature, not Developer ID/notarization.
-      No quarantine, Gatekeeper, sandbox or other macOS protection is bypassed.
-      Pinned Node/pnpm are staged from checksummed official build resources.
-    EOS
-  end
-
-  test do
-    (testpath/"home").mkpath
-    ENV["HOME"] = (testpath/"home").to_s
-    (testpath/"notes.md").write "# Source-built docm\\n\\nOffline formula test.\\n"
-    system bin/"docm", "r", testpath/"notes.md", "-o", testpath/"notes.pdf"
-    assert_equal "%PDF-", (testpath/"notes.pdf").binread(5)
-  end
-end
-`;
+  const formula = renderFormula({
+    version: inputs.version,
+    homepage: pathToFileURL(project + path.sep).href,
+    source: { url: pathToFileURL(inputs.source.archive).href, sha256: inputs.source.sha256 },
+    resources: [...inputs.resources.map(item => ({ ...item, url: pathToFileURL(item.archive).href })), ...inputs.toolResources],
+    receipt: provenance,
+  });
   return { inputs, inputsSha256, formula, formulaSha256: sha(formula), provenance };
 }
 async function brewContext() {
@@ -458,10 +416,10 @@ async function smoke(context, record) {
 async function main() {
   const command = process.argv[2];
   if (!['prepare', 'install', 'refresh', 'smoke'].includes(command) || process.argv.length !== 3) throw new Error('Usage: mise run formula:prepare | formula:install | formula:refresh | formula:smoke');
-  const details = await distribution();
   const context = await brewContext();
   let record = await readManifest();
   await preflight(context, record);
+  const details = await distribution();
   if (command === 'refresh') await refresh(context, record, details);
   else if (command === 'smoke') {
     if (record?.inputsSha256 !== details.inputsSha256 || record?.formulaSha256 !== details.formulaSha256) conflict(inputsPath, 'inputs differ from installed ownership; explicit refresh required');

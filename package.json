@@ -1,8 +1,8 @@
 {
   "name": "docm",
   "version": "0.1.0",
-  "description": "Offline Markdown to PDF desktop application",
-  "author": "docm contributors",
+  "description": "Markdown to PDF preview and rendering",
+  "author": "John Marinelli",
   "license": "MIT",
   "type": "module",
   "main": "out/main/index.js",
@@ -20,7 +20,13 @@
     "formula:prepare": "node scripts/prepare-formula.mjs && node scripts/homebrew.mjs prepare",
     "formula:install": "node scripts/homebrew.mjs install",
     "formula:refresh": "node scripts/prepare-formula.mjs && node scripts/homebrew.mjs refresh",
-    "formula:smoke": "node scripts/homebrew.mjs smoke"
+    "formula:smoke": "node scripts/homebrew.mjs smoke",
+    "release:version": "node scripts/version.mjs bump",
+    "release:check": "node scripts/version.mjs check-tag",
+    "release:prepare": "node scripts/release.mjs prepare",
+    "release:smoke": "node scripts/release-smoke.mjs source",
+    "release:homebrew": "node scripts/release-smoke.mjs homebrew",
+    "release:github": "node scripts/release-github.mjs"
   },
   "build": {
     "appId": "local.docm",

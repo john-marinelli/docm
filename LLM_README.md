@@ -92,3 +92,73 @@ The private `docm/local` formula builds TypeScript in a clean staged tree from c
 [`scripts/smoke.mjs`](scripts/smoke.mjs) exercises PDF contents, themes/assets, watch recovery, reading controls, export consistency, Ctrl-C, and repeated 200-page updates. Screenshots/reports go under `.build/smoke`, `.build/package-smoke`, or `.build/formula-smoke`. Export smoke controls the native dialog response while exercising real IPC, freshness checks, and writes; native Save-panel interaction remains unautomated. Installed desktop behavior uses `formula:smoke`, not a disabled Homebrew test sandbox.
 
 [`scripts/build-smoke.mjs`](scripts/build-smoke.mjs) stages a fresh source tree and frozen dependencies, reuses existing Node/pnpm binaries with mise absent from PATH, removes mise environment variables, and uses a fresh HOME. It runs the complete source build/package path, checks the app signature, and verifies PDF text from the packaged CLI with no developer tools on its runtime PATH. Evidence is written under `.build/build-smoke`; this check does not reinstall Homebrew packages or install new developer tooling.
+
+## Releases and public Homebrew distribution
+
+Everything lives in `john-marinelli/docm`: source, Actions workflows, GitHub Release assets, and the public tap's `Formula/docm.rb`. The application version comes from `package.json`; `scripts/version.mjs` supplies explicit stable SemVer bumps and tag checks, and the CLI bundles that same version. Tool versions still come from `mise.toml`. Version commands never commit, tag, or push automatically.
+
+### Workflows
+
+- [CI](.github/workflows/ci.yml) runs typecheck, behavior tests, and a clean-source build/packaged-CLI smoke on pull requests and `main` pushes. It also supports manual dispatch, which the release bot uses for its formula PR. Setup uses pinned Actions and a pinned mise bootstrap; the actual source build excludes mise.
+- [Release](.github/workflows/release.yml) runs only when a `vX.Y.Z` tag is pushed. It checks the tag/package version, resolves annotated or lightweight tags to the source commit, requires source history from `main` and an unchanged tracked checkout, then builds and exercises the exact candidate assets. Repository-wide release concurrency is serialized with pending runs queued rather than replaced.
+- Publication uploads all verified files into a draft before making it public. A fresh runner then verifies unauthenticated downloads, installs the candidate formula under Homebrew's normal sandbox, exercises the installed CLI outside `brew test`, and uninstalls it. Only successful public-install verification permits a PR updating `Formula/docm.rb`; the workflow never pushes that update directly to `main` or merges it.
+
+Release assets are `docm-VERSION-source.tar.gz`, `docm-VERSION-pnpm-store.tar.gz`, `docm-VERSION-electron-darwin-arm64.tar.gz`, `release-manifest.json`, `docm.rb`, and `SHA256SUMS`. The portable manifest records source commit, version, target architecture, tool versions, and resource hashes without checkout/cache paths. The candidate formula uses GitHub Release HTTPS URLs and official pinned Node/pnpm resources. `scripts/formula.mjs` renders both public and private recipes; publication does not invoke the private local-installation manager. No prebuilt app ZIP, Homebrew bottle, Apple signing credentials, or cask is part of this workflow.
+
+### One-time repository setup
+
+Commit/review/push this implementation to `main` before creating a release tag. Enable Actions and **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests**. The jobs request only their required contents/PR/dispatch permissions and use the automatic `GITHUB_TOKEN`, not a personal token. Organization policies may require an administrator to permit these operations. GitHub can ask for approval of bot-created PR workflows; the publisher also explicitly dispatches CI for the formula branch.
+
+The repository and release downloads must be public for unauthenticated Homebrew installs. Keep branch protections/reviews in place, and restrict who may create or move release tags. The first formula file is created by the first successful release PR, not a placeholder pointing to nonexistent assets.
+
+### First release: 0.1.0
+
+After the implementation is on `main`, tag its current `0.1.0` version without bumping it:
+
+```sh
+git switch main
+git pull --ff-only
+mise run release:check -- v0.1.0
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Watch the **Release** workflow in GitHub Actions. When all release jobs pass, review and merge the generated **Homebrew: docm 0.1.0** PR. That merge makes the formula available from this repository's default branch.
+
+### Subsequent releases
+
+Choose `patch`, `minor`, or `major`. For example, after `0.1.0`:
+
+```sh
+git switch main
+git pull --ff-only
+mise run release:version -- patch
+git add package.json
+git commit -m "chore: release 0.1.1"
+git push origin main
+```
+
+After CI passes, tag the exact version printed by the bump command:
+
+```sh
+mise run release:check -- v0.1.1
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Patch increments the last component; minor increments the middle and resets patch; major increments the first and resets both lower components. Tags must exactly match `package.json`; prereleases and build-metadata versions are not accepted. Repeat the workflow review and formula-PR merge for each release.
+
+### Installation, evidence, and failures
+
+After the formula PR is merged:
+
+```sh
+brew tap john-marinelli/docm https://github.com/john-marinelli/docm.git
+brew install --formula john-marinelli/docm/docm
+```
+
+The public formula does not require preinstalled mise, Node, or pnpm. Existing private/local docm installations are not silently replaced; the disposable CI installation check refuses a preexisting docm installation.
+
+`release:prepare` creates `.build/release` (or an explicit fresh `--output` directory); `release:smoke -- --directory DIR` rebuilds and exercises those exact files. `release:homebrew` is restricted to disposable Actions runners because it installs/uninstalls a real formula. Evidence lives in `.build/release-smoke` and `.build/release-homebrew` and is retained as workflow artifacts. CLI/PDF checks do not claim native preview or Save-panel interaction coverage.
+
+Published releases/assets are never overwritten. A failed upload leaves a draft to inspect; remove only that failed draft before rerunning its failed publication job. If a publication response could not be confirmed, inspect the release's actual state first and never delete a published release. If publication succeeded but public installation or PR creation failed, use **Re-run failed jobs**, not a new tag or an overwritten release. The tap stays on its previous merged formula while verification fails. A preexisting formula branch is reused only when it contains the verified formula and no unrelated changed files; it is never force-pushed. Workflow candidate artifacts are retained for 30 days.

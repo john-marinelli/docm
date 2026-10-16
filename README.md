@@ -32,6 +32,8 @@ though. Originally I wanted to support arbitrary latex, but that ballooned
 the size of things an insane amount, so I switched things to use mathjax,
 which has so far been more than enough.
 
+Currently docm only supports ARM Macs.
+
 ## Usage
 
 ### Live preview
@@ -64,7 +66,7 @@ There is limited control over how documents are rendered outside
 of a config file or frontmatter, but you can use `:::pagebreak` to force
 a page break, and of course $ $ for inline latex, $$ $$ for standalone
 latex, code blocks in triple back ticks with syntax highlighting, and
-mermaid blocks in triple backticks with `mermaid`
+mermaid blocks in triple backticks with `mermaid`.
 
 ## Configuration options
 
@@ -76,7 +78,7 @@ Accepted units are `px`, `pt`, `mm`, `cm` or `in`. You can also use
 
 ### Fonts
 
-Fonts can be `sans`, `mono` or a declared font under `[font]`. 
+Fonts can be `sans`, `mono` or a declared font under `[fonts]`. 
 
 ### Variables
 
