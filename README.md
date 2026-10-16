@@ -34,6 +34,13 @@ which has so far been more than enough.
 
 Currently docm only supports ARM Macs.
 
+## Installation
+
+```bash
+brew tap john-marinelli/docm https://github.com/john-marinelli/docm.git
+brew install --formula john-marinelli/docm/docm
+```
+
 ## Usage
 
 ### Live preview
