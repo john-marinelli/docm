@@ -16,6 +16,15 @@ number_headings = false
 
 [fonts]
 
+[macro.left]
+text_align = "left"
+
+[macro.right]
+text_align = "right"
+
+[macro.center]
+text_align = "center"
+
 [body]
 font = "sans"
 font_size = "11pt"

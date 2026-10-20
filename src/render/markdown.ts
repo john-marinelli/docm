@@ -15,6 +15,7 @@ import { RenderError } from '../shared/errors.js';
 import type { SourceLocation } from '../shared/types.js';
 import type { MarkdownModel } from './model.js';
 import { remarkPagebreak } from './pagebreak.js';
+import { expandMacroHtml, groupMacros, remarkMacros } from './macros.js';
 
 export interface MarkdownOptions {
   sourcePath: string;
@@ -119,17 +120,22 @@ function contents(headings: MarkdownModel['headings']): Element {
   ]);
 }
 
-/** Parse authored Markdown once, with no raw HTML or unapproved image URLs in HTML. */
+/** Parse authored Markdown, allowing only configured formatting tags, never raw HTML. */
 export async function prepareMarkdown(markdown: string, options: MarkdownOptions): Promise<MarkdownModel> {
   const { config, sourcePath, lineOffset } = options;
-  const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
-  let tree: Root = parser.parse(markdown);
-  const markers = [...markdown.matchAll(/:::pagebreak *(?=\r?\n|\r|$)/g)].map((match) => match.index);
-  if (markers.length > 0) {
-    // Block parsing normally interrupts multiline code spans/math before inline
-    // parsing can identify them. Let the upstream parser own those delimiters.
+  const hasMacros = Object.keys(config.macro).length > 0;
+  const parse = (text: string, inlineHtml = false): Root => {
+    const base = () => {
+      const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+      if (inlineHtml) parser.data('micromarkExtensions', [{ disable: { null: ['htmlFlow'] } }]);
+      return parser;
+    };
+    const original = base().parse(text);
+    if (!hasMacros && !text.includes(':::pagebreak')) return original;
+    const markers = [...text.matchAll(/:::pagebreak *(?=\r?\n|\r|$)|<\/?[A-Za-z][A-Za-z0-9_-]*>/g)].map((match) => match.index);
+    // Block extensions must not interrupt upstream-parsed multiline code/math.
     const protectedOffsets = new Set<number>();
-    visit(tree, (node) => {
+    visit(original, (node) => {
       if (node.type !== 'inlineCode' && node.type !== 'inlineMath') return;
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
@@ -138,8 +144,14 @@ export async function prepareMarkdown(markdown: string, options: MarkdownOptions
         if (offset >= start && offset < end) protectedOffsets.add(offset);
       }
     });
-    tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
-      .use(remarkPagebreak, { protectedOffsets }).parse(markdown);
+    const parser = base().use(remarkPagebreak, { protectedOffsets });
+    if (hasMacros) parser.use(remarkMacros, { macros: config.macro, protectedOffsets });
+    return parser.parse(text);
+  };
+  const tree = parse(markdown);
+  if (hasMacros) {
+    expandMacroHtml(tree, config.macro, (text) => parse(text, true));
+    groupMacros(tree, sourcePath, lineOffset);
   }
   const model: MarkdownModel = {
     html: '', title: path.basename(sourcePath, path.extname(sourcePath)),
@@ -220,6 +232,19 @@ export async function prepareMarkdown(markdown: string, options: MarkdownOptions
 
   const converter = unified().use(remarkRehype, {
     handlers: {
+      docmMacro(state, node: Nodes) {
+        if (node.type !== 'docmMacro') throw new Error('Expected a formatting macro');
+        const alignment = config.macro[node.name]!.text_align;
+        const left = alignment === 'left' ? '0' : 'auto';
+        const right = alignment === 'right' ? '0' : 'auto';
+        addClass(node, 'docm-macro');
+        if (node.inline) addClass(node, 'docm-macro-inline');
+        const result = element(node.inline ? 'span' : 'div', {
+          style: `--docm-macro-align:${alignment};--docm-macro-left:${left};--docm-macro-right:${right}`,
+        }, state.all(node));
+        state.patch(node, result);
+        return state.applyData(node, result);
+      },
       code(state, node: Code) {
         const result = prepared.get(node)!;
         state.patch(node, result);

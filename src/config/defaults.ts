@@ -9,6 +9,11 @@ export const defaults = {
   },
   document: { toc: false, number_headings: false },
   fonts: {},
+  macro: {
+    left: { text_align: 'left' },
+    right: { text_align: 'right' },
+    center: { text_align: 'center' },
+  },
   body: {
     font: 'sans', font_size: '11pt', font_weight: 400, font_style: 'normal',
     text_align: 'left', line_height: 1.5, color: '#202124', background: '#FFFFFF',

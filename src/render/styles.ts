@@ -116,5 +116,9 @@ export function documentCss(config: Config): string {
     `.docm-pagebreak{break-before:page;}.docm-keep-together{break-inside:avoid-page;}`,
     `.docm-toc{margin-bottom:${px(config.headings.h1.space_after)};}.docm-toc ul{list-style:none;}.docm-toc a{overflow-wrap:anywhere;}`,
     `p,li,blockquote,pre,td,th{widows:3;orphans:3;}`,
+    // Inherited variables select the nearest macro, even through explicit element styles.
+    `.docm-macro,.docm-macro *{text-align:var(--docm-macro-align)!important;}`,
+    `.docm-macro-inline{display:block;}`,
+    `.docm-macro img.docm-image,.docm-macro :is(.docm-mermaid,.docm-math-display,.docm-math-own-line)>svg{margin-left:var(--docm-macro-left)!important;margin-right:var(--docm-macro-right)!important;}`,
   ].join('\n');
 }

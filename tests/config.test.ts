@@ -104,6 +104,107 @@ width = "18mm"
   });
 });
 
+describe('formatting macro configuration', () => {
+  it('merges names across every configuration source with higher-layer alignment taking precedence', async () => {
+    const f = await fixture();
+    await writeFile(f.source, 'Text');
+    await writeFile(f.globalThemePath, `
+[macro.Shared]
+text_align = "left"
+[macro.global_only]
+text_align = "center"
+[macro.shared]
+text_align = "right"
+`);
+    expect((await loadConfig(f.source, f)).config.macro.Shared).toEqual({ text_align: 'left' });
+
+    await writeFile(path.join(f.cwd, 'theme.toml'), `
+[macro.Shared]
+text_align = "center"
+[macro.cwd-only]
+text_align = "left"
+`);
+    expect((await loadConfig(f.source, f)).config.macro.Shared).toEqual({ text_align: 'center' });
+
+    const configPath = path.join(f.root, 'explicit.toml');
+    await writeFile(configPath, `
+[macro.Shared]
+text_align = "right"
+[macro.explicit1]
+text_align = "center"
+`);
+    expect((await loadConfig(f.source, { ...f, configPath })).config.macro.Shared).toEqual({ text_align: 'right' });
+
+    await writeFile(f.source, `+++
+[macro.Shared]
+text_align = "left"
+[macro.frontmatter]
+text_align = "right"
+[macro.div]
+text_align = "center"
++++
+Text`);
+    const { config } = await loadConfig(f.source, { ...f, configPath });
+    expect(config.macro).toMatchObject({
+      Shared: { text_align: 'left' },
+      shared: { text_align: 'right' },
+      global_only: { text_align: 'center' },
+      'cwd-only': { text_align: 'left' },
+      explicit1: { text_align: 'center' },
+      frontmatter: { text_align: 'right' },
+      div: { text_align: 'center' },
+    });
+  });
+
+  it('permits partial layer definitions only when merging supplies their required alignment', async () => {
+    const f = await fixture();
+    await writeFile(f.globalThemePath, '[macro.shared]\n');
+    await writeFile(f.source, '+++\n[macro.shared]\ntext_align = "center"\n+++\nText');
+    expect((await loadConfig(f.source, f)).config.macro.shared).toEqual({ text_align: 'center' });
+
+    await writeFile(f.globalThemePath, '[macro.shared]\ntext_align = "right"\n');
+    await writeFile(f.source, '+++\n[macro.shared]\n+++\nText');
+    expect((await loadConfig(f.source, f)).config.macro.shared).toEqual({ text_align: 'right' });
+
+    await writeFile(f.globalThemePath, '[macro.shared]\n');
+    await expect(loadConfig(f.source, f)).rejects.toBeInstanceOf(RenderError);
+  });
+
+  it.each(['global', 'cwd', 'explicit', 'frontmatter'] as const)('strictly validates macro definitions in the %s layer before merging', async (layer) => {
+    const f = await fixture();
+    const configPath = path.join(f.root, 'explicit.toml');
+    const layerPath = {
+      global: f.globalThemePath,
+      cwd: path.join(f.cwd, 'theme.toml'),
+      explicit: configPath,
+      frontmatter: f.source,
+    }[layer];
+    const invalid = [
+      ...['', '1name', '_name', '-name', 'two words', 'a.b', 'é', 'a/b', 'a\n'].map((name) =>
+        `[macro.${JSON.stringify(name)}]\ntext_align = "left"`),
+      '[macro.shared]\ntext_align = "justify"',
+      '[macro.shared]\ntext_align = 1',
+      '[macro.shared]\ntext_align = "LEFT"',
+      '[macro.shared]\ntext_align = "left"\ncolor = "#123456"',
+      '[macro.shared]\nalign = "left"',
+      '[macro]\nshared = false',
+      'macro = []',
+    ];
+    for (const input of invalid) {
+      await writeFile(f.source, layer === 'frontmatter'
+        ? `+++\n${input}\n+++\nText`
+        : '+++\n[macro.shared]\ntext_align = "center"\n+++\nText');
+      if (layer !== 'frontmatter') await writeFile(layerPath, input);
+      await expect(loadConfig(f.source, { ...f, ...(layer === 'explicit' ? { configPath } : {}) })).rejects.toMatchObject({
+        name: 'RenderError', source: { path: layerPath },
+      });
+    }
+    await writeFile(f.source, layer === 'frontmatter' ? '+++\n[macro.shared]\n+++\nText' : 'Text');
+    if (layer !== 'frontmatter') await writeFile(layerPath, '[macro.shared]\n');
+    await expect(loadConfig(f.source, { ...f, ...(layer === 'explicit' ? { configPath } : {}) })).rejects.toBeInstanceOf(RenderError);
+  });
+});
+
 describe('Mermaid chart configuration', () => {
   it('merges partial chart overrides across layers before inheriting final global settings', async () => {
     const f = await fixture();
