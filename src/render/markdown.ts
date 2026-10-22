@@ -10,11 +10,12 @@ import remarkRehype from 'remark-rehype';
 import { bundledLanguages, createHighlighter, type BundledLanguage, type Highlighter } from 'shiki';
 import { unified } from 'unified';
 import { visit } from 'unist-util-visit';
-import type { Config } from '../config/schema.js';
+import { normalizeLength, type Config } from '../config/schema.js';
 import { RenderError } from '../shared/errors.js';
 import type { SourceLocation } from '../shared/types.js';
 import type { MarkdownModel } from './model.js';
 import { remarkPagebreak } from './pagebreak.js';
+import { expandMacroHtml, groupMacros, remarkMacros } from './macros.js';
 
 export interface MarkdownOptions {
   sourcePath: string;
@@ -119,17 +120,22 @@ function contents(headings: MarkdownModel['headings']): Element {
   ]);
 }
 
-/** Parse authored Markdown once, with no raw HTML or unapproved image URLs in HTML. */
+/** Parse authored Markdown, allowing only configured formatting tags, never raw HTML. */
 export async function prepareMarkdown(markdown: string, options: MarkdownOptions): Promise<MarkdownModel> {
   const { config, sourcePath, lineOffset } = options;
-  const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
-  let tree: Root = parser.parse(markdown);
-  const markers = [...markdown.matchAll(/:::pagebreak *(?=\r?\n|\r|$)/g)].map((match) => match.index);
-  if (markers.length > 0) {
-    // Block parsing normally interrupts multiline code spans/math before inline
-    // parsing can identify them. Let the upstream parser own those delimiters.
+  const hasMacros = Object.keys(config.macro).length > 0;
+  const parse = (text: string, inlineHtml = false): Root => {
+    const base = () => {
+      const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+      if (inlineHtml) parser.data('micromarkExtensions', [{ disable: { null: ['htmlFlow'] } }]);
+      return parser;
+    };
+    const original = base().parse(text);
+    if (!hasMacros && !text.includes(':::pagebreak')) return original;
+    const markers = [...text.matchAll(/:::pagebreak *(?=\r?\n|\r|$)|<\/?[A-Za-z][A-Za-z0-9_-]*>/g)].map((match) => match.index);
+    // Block extensions must not interrupt upstream-parsed multiline code/math.
     const protectedOffsets = new Set<number>();
-    visit(tree, (node) => {
+    visit(original, (node) => {
       if (node.type !== 'inlineCode' && node.type !== 'inlineMath') return;
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
@@ -138,8 +144,14 @@ export async function prepareMarkdown(markdown: string, options: MarkdownOptions
         if (offset >= start && offset < end) protectedOffsets.add(offset);
       }
     });
-    tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
-      .use(remarkPagebreak, { protectedOffsets }).parse(markdown);
+    const parser = base().use(remarkPagebreak, { protectedOffsets });
+    if (hasMacros) parser.use(remarkMacros, { macros: config.macro, protectedOffsets });
+    return parser.parse(text);
+  };
+  const tree = parse(markdown);
+  if (hasMacros) {
+    expandMacroHtml(tree, config.macro, (text) => parse(text, true));
+    groupMacros(tree, sourcePath, lineOffset);
   }
   const model: MarkdownModel = {
     html: '', title: path.basename(sourcePath, path.extname(sourcePath)),
@@ -220,6 +232,38 @@ export async function prepareMarkdown(markdown: string, options: MarkdownOptions
 
   const converter = unified().use(remarkRehype, {
     handlers: {
+      docmMacro(state, node: Nodes) {
+        if (node.type !== 'docmMacro') throw new Error('Expected a formatting macro');
+        const macro = config.macro[node.name]!;
+        const styles: string[] = [];
+        addClass(node, 'docm-macro');
+        if (macro.text_align !== undefined) {
+          const alignment = macro.text_align;
+          addClass(node, 'docm-macro-align');
+          styles.push(`--docm-macro-align:${alignment}`,
+            `--docm-macro-left:${alignment === 'left' ? '0' : 'auto'}`,
+            `--docm-macro-right:${alignment === 'right' ? '0' : 'auto'}`);
+        }
+        if (node.inline) addClass(node, 'docm-macro-inline');
+        if (macro.float !== undefined || macro.width !== undefined || macro.height !== undefined) {
+          addClass(node, 'docm-macro-layout');
+        }
+        if (macro.float !== undefined) {
+          styles.push(`float:${macro.float}`);
+          if (macro.float !== 'none') addClass(node, `docm-float-${macro.float}`);
+        }
+        if (macro.width !== undefined) styles.push(`width:${normalizeLength(macro.width)}px`);
+        if (macro.height !== undefined) {
+          styles.push(`height:${normalizeLength(macro.height)}px`);
+          addClass(node, 'docm-macro-height');
+        }
+        const result = element(node.inline ? 'span' : 'div', {
+          dataDocmMacro: node.name,
+          ...(styles.length ? { style: styles.join(';') } : {}),
+        }, state.all(node));
+        state.patch(node, result);
+        return state.applyData(node, result);
+      },
       code(state, node: Code) {
         const result = prepared.get(node)!;
         state.patch(node, result);
