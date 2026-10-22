@@ -10,7 +10,7 @@ import remarkRehype from 'remark-rehype';
 import { bundledLanguages, createHighlighter, type BundledLanguage, type Highlighter } from 'shiki';
 import { unified } from 'unified';
 import { visit } from 'unist-util-visit';
-import type { Config } from '../config/schema.js';
+import { normalizeLength, type Config } from '../config/schema.js';
 import { RenderError } from '../shared/errors.js';
 import type { SourceLocation } from '../shared/types.js';
 import type { MarkdownModel } from './model.js';
@@ -234,13 +234,32 @@ export async function prepareMarkdown(markdown: string, options: MarkdownOptions
     handlers: {
       docmMacro(state, node: Nodes) {
         if (node.type !== 'docmMacro') throw new Error('Expected a formatting macro');
-        const alignment = config.macro[node.name]!.text_align;
-        const left = alignment === 'left' ? '0' : 'auto';
-        const right = alignment === 'right' ? '0' : 'auto';
+        const macro = config.macro[node.name]!;
+        const styles: string[] = [];
         addClass(node, 'docm-macro');
+        if (macro.text_align !== undefined) {
+          const alignment = macro.text_align;
+          addClass(node, 'docm-macro-align');
+          styles.push(`--docm-macro-align:${alignment}`,
+            `--docm-macro-left:${alignment === 'left' ? '0' : 'auto'}`,
+            `--docm-macro-right:${alignment === 'right' ? '0' : 'auto'}`);
+        }
         if (node.inline) addClass(node, 'docm-macro-inline');
+        if (macro.float !== undefined || macro.width !== undefined || macro.height !== undefined) {
+          addClass(node, 'docm-macro-layout');
+        }
+        if (macro.float !== undefined) {
+          styles.push(`float:${macro.float}`);
+          if (macro.float !== 'none') addClass(node, `docm-float-${macro.float}`);
+        }
+        if (macro.width !== undefined) styles.push(`width:${normalizeLength(macro.width)}px`);
+        if (macro.height !== undefined) {
+          styles.push(`height:${normalizeLength(macro.height)}px`);
+          addClass(node, 'docm-macro-height');
+        }
         const result = element(node.inline ? 'span' : 'div', {
-          style: `--docm-macro-align:${alignment};--docm-macro-left:${left};--docm-macro-right:${right}`,
+          dataDocmMacro: node.name,
+          ...(styles.length ? { style: styles.join(';') } : {}),
         }, state.all(node));
         state.patch(node, result);
         return state.applyData(node, result);

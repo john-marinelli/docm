@@ -83,7 +83,37 @@ This paragraph is right-aligned instead.
 </mymacro>
 ```
 
-Only `text_align = "left"`, `"center"`, or `"right"` is currently exposed. A macro is the final alignment override for its enclosed content, above body/element settings and document frontmatter, including Markdown table-column alignment. Images, display math, and Mermaid artwork follow the override too; their sizes are unchanged. The innermost macro wins, and closing it restores the enclosing alignment. Content outside a macro keeps its normal configuration.
+Macros support `text_align = "left"`, `"center"`, or `"right"`, `float = "left"`, `"right"`, or `"none"`, and optional `width` / `height`. Each setting is optional, but a merged macro definition must contain at least one. A macro's alignment is the final override for its enclosed content, above body/element settings and document frontmatter, including Markdown table-column alignment. Images, display math, and Mermaid artwork follow the alignment too. The innermost specified alignment wins, and closing it restores the enclosing alignment. Layout-only macros leave the existing element alignment unchanged.
+
+#### Floats and dimensions
+
+```toml
+[macro.figure_right]
+float = "right"
+width = "60mm"
+height = "40mm"
+```
+
+```markdown
+<figure_right>
+![Architecture](architecture.png)
+</figure_right>
+
+This prose wraps along the left side of the figure, then returns to
+the full available width after the floated box ends.
+```
+
+The same wrapper accepts fenced code or other Markdown blocks. Put the surrounding prose **after** the closing macro tag, outside the floated wrapper.
+
+| Setting | Behavior |
+|---|---|
+| `float` | `left` or `right` lets following prose wrap beside the wrapper; `none` disables that macro's float, including an inherited configuration-layer value. It does not clear an earlier sibling float. |
+| `width` | Sets the wrapper width, capped to its containing width. Floats reserve an additional 12 pt gap toward the prose. Omit it for normal automatic/shrink-to-fit sizing. |
+| `height` | Sets the wrapper height, including any space left beneath its content. Omit it for content-driven height. Artwork shrinks to fit the available width/height without changing aspect ratio; existing element padding and spacing consume part of that space. Text/code is not scaled: content that exceeds an explicit height reports an error rather than clipping or overlapping prose. |
+
+Dimensions must be positive lengths in `px`, `pt`, `mm`, `cm`, or `in`; zero, unitless numbers, percentages, and `auto` are not accepted. Dimensions size the wrapper, not the font, and do not enlarge naturally smaller images. Width, height, and float are local to each wrapper rather than inherited by nested macros; each field still merges normally across TOML sources.
+
+Floats that fit a page are kept together. A float taller than the printable page falls back to normal flow so its content can paginate. `:::pagebreak` clears earlier floats before beginning the next page. These layout controls do not introduce a dedicated caption element; ordinary Markdown inside a wrapper remains part of that floated unit.
 
 Names are case-sensitive ASCII letters followed by letters, digits, `_`, or `-`. Only exact bare `<name>` / `</name>` tags are recognized; attributes and self-closing forms are not supported. Put tags on separate lines for multi-block content; `<mymacro>short text</mymacro>` also works. Alignment is block-level: even same-line macro content gets its own aligned line. Tags can be nested, including repeated names, but must close in order within the same Markdown container. Unclosed or mismatched configured tags report source-located errors.
 

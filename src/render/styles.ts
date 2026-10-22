@@ -77,7 +77,7 @@ export function documentCss(config: Config): string {
     `*,*::before,*::after{box-sizing:border-box;}`,
     `body{${typography(config.body)}background:${config.body.background};margin:0;}`,
     styled('.docm-document', config.body),
-    `.docm-document{min-width:0;overflow-wrap:anywhere;widows:3;orphans:3;}`,
+    `.docm-document{display:flow-root;min-width:0;overflow-wrap:anywhere;widows:3;orphans:3;}`,
     styled('p', config.paragraph),
     ...(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const).map((heading) => styled(heading, config.headings[heading])),
     `h1,h2,h3,h4,h5,h6{break-after:avoid-page;}`,
@@ -113,12 +113,16 @@ export function documentCss(config: Config): string {
     `.docm-math-display{display:block;text-align:center;margin-top:${px(config.math.space_before)};margin-bottom:${px(config.math.space_after)};max-width:100%;}.docm-math-display>svg{display:block;margin-inline:auto;}`,
     // Renderer-reported depth belongs on the inline wrapper, not the block SVG.
     `.docm-math-own-line{display:block;text-align:center;margin-top:${px(config.math.space_before)};margin-bottom:${px(config.math.space_after)};}.docm-math-own-line>svg{margin-inline:auto;}`,
-    `.docm-pagebreak{break-before:page;}.docm-keep-together{break-inside:avoid-page;}`,
+    `.docm-pagebreak{clear:both;break-before:page;}.docm-keep-together{break-inside:avoid-page;}`,
     `.docm-toc{margin-bottom:${px(config.headings.h1.space_after)};}.docm-toc ul{list-style:none;}.docm-toc a{overflow-wrap:anywhere;}`,
     `p,li,blockquote,pre,td,th{widows:3;orphans:3;}`,
     // Inherited variables select the nearest macro, even through explicit element styles.
-    `.docm-macro,.docm-macro *{text-align:var(--docm-macro-align)!important;}`,
+    `.docm-macro-align,.docm-macro-align *{text-align:var(--docm-macro-align)!important;}`,
     `.docm-macro-inline{display:block;}`,
-    `.docm-macro img.docm-image,.docm-macro :is(.docm-mermaid,.docm-math-display,.docm-math-own-line)>svg{margin-left:var(--docm-macro-left)!important;margin-right:var(--docm-macro-right)!important;}`,
+    `.docm-macro-layout{display:flow-root;max-width:100%;}`,
+    `.docm-macro-layout>:first-child{margin-top:0;}.docm-macro-layout>:last-child{margin-bottom:0;}`,
+    `.docm-float-left{max-width:calc(100% - 12pt);margin:0 12pt 12pt 0;}`,
+    `.docm-float-right{max-width:calc(100% - 12pt);margin:0 0 12pt 12pt;}`,
+    `.docm-macro-align img.docm-image,.docm-macro-align :is(.docm-mermaid,.docm-math-display,.docm-math-own-line)>svg{margin-left:var(--docm-macro-left)!important;margin-right:var(--docm-macro-right)!important;}`,
   ].join('\n');
 }

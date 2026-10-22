@@ -156,15 +156,41 @@ Text`);
     });
   });
 
-  it('permits partial layer definitions only when merging supplies their required alignment', async () => {
+  it('merges partial layout settings across every layer and permits clearing a float', async () => {
+    const f = await fixture();
+    const configPath = path.join(f.root, 'explicit.toml');
+    await writeFile(f.globalThemePath, '[macro.shared]\nfloat = "left"\nwidth = "120px"\n');
+    await writeFile(path.join(f.cwd, 'theme.toml'), '[macro.shared]\nheight = "2cm"\n');
+    await writeFile(configPath, '[macro.shared]\nwidth = "36pt"\ntext_align = "right"\n');
+    await writeFile(f.source, '+++\n[macro.shared]\nfloat = "none"\n+++\nText');
+    expect((await loadConfig(f.source, { ...f, configPath })).config.macro.shared).toEqual({
+      float: 'none', width: '36pt', height: '2cm', text_align: 'right',
+    });
+  });
+
+  it.each([
+    { setting: 'float = "left"', expected: { float: 'left' } },
+    { setting: 'float = "right"', expected: { float: 'right' } },
+    { setting: 'float = "none"', expected: { float: 'none' } },
+    ...['px', 'pt', 'mm', 'cm', 'in'].flatMap((unit) => [
+      { setting: `width = "1.5${unit}"`, expected: { width: `1.5${unit}` } },
+      { setting: `height = ".5${unit}"`, expected: { height: `.5${unit}` } },
+    ]),
+  ])('accepts a standalone layout setting: $setting', async ({ setting, expected }) => {
+    const f = await fixture();
+    await writeFile(f.source, `+++\n[macro.layout]\n${setting}\n+++\nText`);
+    expect((await loadConfig(f.source, f)).config.macro.layout).toEqual(expected);
+  });
+
+  it('permits empty layer definitions only when merging supplies a meaningful setting', async () => {
     const f = await fixture();
     await writeFile(f.globalThemePath, '[macro.shared]\n');
-    await writeFile(f.source, '+++\n[macro.shared]\ntext_align = "center"\n+++\nText');
-    expect((await loadConfig(f.source, f)).config.macro.shared).toEqual({ text_align: 'center' });
+    await writeFile(f.source, '+++\n[macro.shared]\nwidth = "20mm"\n+++\nText');
+    expect((await loadConfig(f.source, f)).config.macro.shared).toEqual({ width: '20mm' });
 
-    await writeFile(f.globalThemePath, '[macro.shared]\ntext_align = "right"\n');
+    await writeFile(f.globalThemePath, '[macro.shared]\nfloat = "right"\n');
     await writeFile(f.source, '+++\n[macro.shared]\n+++\nText');
-    expect((await loadConfig(f.source, f)).config.macro.shared).toEqual({ text_align: 'right' });
+    expect((await loadConfig(f.source, f)).config.macro.shared).toEqual({ float: 'right' });
 
     await writeFile(f.globalThemePath, '[macro.shared]\n');
     await expect(loadConfig(f.source, f)).rejects.toBeInstanceOf(RenderError);
@@ -185,6 +211,10 @@ Text`);
       '[macro.shared]\ntext_align = "justify"',
       '[macro.shared]\ntext_align = 1',
       '[macro.shared]\ntext_align = "LEFT"',
+      ...['"center"', '"LEFT"', '1', 'false'].map((value) => `[macro.shared]\nfloat = ${value}`),
+      ...['width', 'height'].flatMap((dimension) =>
+        ['"0px"', '"-1pt"', '"0"', '"1"', '"1em"', '"10%"', '0', '-1', '1'].map((value) =>
+          `[macro.shared]\n${dimension} = ${value}`)),
       '[macro.shared]\ntext_align = "left"\ncolor = "#123456"',
       '[macro.shared]\nalign = "left"',
       '[macro]\nshared = false',
@@ -193,7 +223,7 @@ Text`);
     for (const input of invalid) {
       await writeFile(f.source, layer === 'frontmatter'
         ? `+++\n${input}\n+++\nText`
-        : '+++\n[macro.shared]\ntext_align = "center"\n+++\nText');
+        : '+++\n[macro.shared]\ntext_align = "center"\nfloat = "none"\nwidth = "10px"\nheight = "10px"\n+++\nText');
       if (layer !== 'frontmatter') await writeFile(layerPath, input);
       await expect(loadConfig(f.source, { ...f, ...(layer === 'explicit' ? { configPath } : {}) })).rejects.toMatchObject({
         name: 'RenderError', source: { path: layerPath },

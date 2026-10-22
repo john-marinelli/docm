@@ -25,6 +25,12 @@ text_align = "right"
 [macro.center]
 text_align = "center"
 
+# Optional layout-only macro example:
+# [macro.figure_right]
+# float = "right"
+# width = "60mm"
+# height = "40mm"
+
 [body]
 font = "sans"
 font_size = "11pt"
