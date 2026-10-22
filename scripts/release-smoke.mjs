@@ -4,14 +4,15 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {parseArgs} from 'node:util';
-import {releaseFormula,verifyRelease} from './release.mjs';
+import {releaseFormula,releasePlatform,verifyRelease} from './release.mjs';
 import {root,run} from './prepare-formula.mjs';
 import {smokeSource,verifyPackagedCli} from './source-smoke.mjs';
 
 export async function smokeRelease(directory){
   const manifest=await verifyRelease(directory);
+  const target=releasePlatform(manifest);
   const local=asset=>({...asset,archive:path.join(directory,asset.filename)});
-  const inputs={version:manifest.version,tools:manifest.tools,toolResources:manifest.toolResources,source:local(manifest.assets.find(asset=>asset.name==='source')),resources:manifest.assets.filter(asset=>asset.name!=='source').map(local)};
+  const inputs={platform:{os:target.os,arch:target.arch},version:manifest.version,tools:manifest.tools,toolResources:target.toolResources,source:local(target.assets.find(asset=>asset.name==='source')),resources:target.assets.filter(asset=>asset.name!=='source').map(local)};
   return smokeSource(inputs,{artifacts:path.join(root,'.build','release-smoke')});
 }
 export async function smokeHomebrew(directory,{localAssets=false}={}){
@@ -19,6 +20,7 @@ export async function smokeHomebrew(directory,{localAssets=false}={}){
   // a developer's existing Homebrew installation as an incidental local check.
   if(process.env.GITHUB_ACTIONS!=='true')throw new Error('Homebrew release installation checks require a disposable GitHub Actions runner');
   const manifest=await verifyRelease(directory);
+  const target=releasePlatform(manifest),platform={os:target.os,arch:target.arch};
   if(manifest.repository!==process.env.GITHUB_REPOSITORY)throw new Error('Release repository does not match this workflow');
   const env={...process.env,HOMEBREW_NO_AUTO_UPDATE:'1',HOMEBREW_NO_INSTALL_CLEANUP:'1'};
   const installedNames=await run('brew',['list','--formula','--versions'],{env,capture:true});
@@ -38,10 +40,23 @@ export async function smokeHomebrew(directory,{localAssets=false}={}){
     await run('brew',['tap',tap,pathToFileURL(repository).href],{env});tapped=true;
     await run('brew',['install','--formula','--build-from-source',formula],{env});installed=true;
     const prefix=await run('brew',['--prefix',formula],{env,capture:true});
-    const runtime=await verifyPackagedCli(path.join(prefix,'libexec','Docm.app'),{stage,artifacts,version:manifest.version});
+    const information=JSON.parse(await run('brew',['info','--json=v2','--formula',formula],{env,capture:true}));
+    const installedFormula=information.formulae?.[0],source=target.assets.find(asset=>asset.name==='source');
+    const sourceUrl=localAssets?pathToFileURL(path.resolve(directory,source.filename)).href:`https://github.com/${manifest.repository}/releases/download/${manifest.tag}/${source.filename}`;
+    assert.equal(information.formulae?.length,1);
+    assert.equal(installedFormula.urls?.stable?.url,sourceUrl,'Homebrew did not select the native release source');
+    assert.equal(installedFormula.urls?.stable?.checksum,source.sha256);
+    assert.equal(installedFormula.installed?.length,1);
+    assert.equal(installedFormula.installed[0].version,manifest.version);
+    assert.equal(installedFormula.installed[0].poured_from_bottle,false,'Release smoke requires a real source installation');
+    const bundle=path.join(prefix,'libexec',platform.os==='darwin'?'Docm.app':'docm-linux');
+    const runtime=await verifyPackagedCli(bundle,{stage,artifacts,version:manifest.version,platform});
+    const {runSmoke}=await import('./smoke.mjs');
+    const smokeArtifacts=path.join(artifacts,'runtime-smoke');
+    const smoke=await runSmoke({executable:path.join(prefix,'bin','docm'),packaged:true,artifactsPath:smokeArtifacts});
     await run('brew',['uninstall','--formula',formula],{env});installed=false;
-    await assert.rejects(stat(path.join(prefix,'libexec','Docm.app')),error=>error.code==='ENOENT');
-    const report={tag:manifest.tag,commit:manifest.commit,checks:{publicAssetFormula:!localAssets,candidateAssetFormula:localAssets,normalHomebrewSandbox:true,installedCli:true,packageVersion:true,pdfContents:true,uninstalled:true},...runtime};
+    await assert.rejects(stat(bundle),error=>error.code==='ENOENT');
+    const report={platform,tag:manifest.tag,commit:manifest.commit,checks:{publicAssetFormula:!localAssets,candidateAssetFormula:localAssets,nativeSourceSelected:true,sourceBuildReceipt:true,normalHomebrewSandbox:true,installedCli:true,packageVersion:true,pdfContents:true,installedPreview:true,fullRuntimeSmoke:true,uninstalled:true},...runtime,smoke:{artifacts:smokeArtifacts,report:smoke}};
     await writeFile(path.join(artifacts,'report.json'),JSON.stringify(report,null,2)+'\n');console.error(JSON.stringify(report,null,2));return report;
   }finally{
     try{if(installed)await run('brew',['uninstall','--formula',formula],{env});}

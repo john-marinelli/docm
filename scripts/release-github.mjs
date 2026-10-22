@@ -6,6 +6,7 @@ import {pipeline} from 'node:stream/promises';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
 import {readVersion,validateTag} from './version.mjs';
+import {fileDigest} from './prepare-formula.mjs';
 import {verifyRelease} from './release.mjs';
 
 export class GitHubApi{
@@ -30,7 +31,7 @@ export class GitHubApi{
   }
 }
 
-function releaseFiles(manifest){return [...manifest.assets.map(asset=>asset.filename),'release-manifest.json','docm.rb','SHA256SUMS'];}
+function releaseFiles(manifest){return [...manifest.platforms.flatMap(target=>target.assets.map(asset=>asset.filename)),'release-manifest.json','docm.rb','SHA256SUMS'];}
 function context({repository,tag,commit}){
   if(!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository||''))throw new Error('A valid OWNER/REPOSITORY is required');
   if(!/^[a-f0-9]{40}$/.test(commit||''))throw new Error('The full release source commit is required');
@@ -49,7 +50,16 @@ export async function preflightRelease({api,repository,tag,commit,version}){
 async function verified(directory,expected){
   const manifest=await verifyRelease(directory);context(expected);validateTag(expected.tag,manifest.version);
   for(const key of ['repository','tag','commit'])if(manifest[key]!==expected[key])throw new Error(`Release artifact ${key} does not match the workflow source`);
+  if(manifest.platforms.map(target=>`${target.os}-${target.arch}`).join(',')!=='darwin-arm64,linux-x64')throw new Error('Public release operations require the merged darwin-arm64 and linux-x64 candidates');
   return manifest;
+}
+async function checkRemoteAssets(release,manifest,directory){
+  const names=releaseFiles(manifest);
+  if(!Array.isArray(release.assets)||release.assets.length!==names.length||release.assets.map(asset=>asset.name).sort().join(',')!==[...names].sort().join(','))throw new Error('GitHub release asset set differs from the verified candidate');
+  for(const name of names){
+    const asset=release.assets.find(item=>item.name===name),file=path.join(directory,name);
+    if(asset.state!=='uploaded'||asset.size!==(await stat(file)).size||asset.digest!==`sha256:${await fileDigest(file)}`)throw new Error(`GitHub release asset metadata/checksum differs: ${name}`);
+  }
 }
 export async function publishRelease({directory,api,...expected}){
   const manifest=await verified(directory,expected);
@@ -58,6 +68,9 @@ export async function publishRelease({directory,api,...expected}){
   let publicationStarted=false;
   try{
     for(const name of releaseFiles(manifest))await api.upload(manifest.repository,release.id,path.join(directory,name));
+    const uploaded=await api.request('GET',`/repos/${manifest.repository}/releases/${release.id}`);
+    if(!uploaded.draft||uploaded.tag_name!==manifest.tag)throw new Error('Release draft identity changed during upload');
+    await checkRemoteAssets(uploaded,manifest,directory);
     publicationStarted=true;
     const published=await api.request('PATCH',`/repos/${manifest.repository}/releases/${release.id}`,{draft:false,make_latest:'true'});
     console.log(`Published ${published.html_url}`);return published;
@@ -73,6 +86,7 @@ export async function downloadPublicRelease({directory,output,api,...expected}){
   const release=await api.request('GET',`/repos/${manifest.repository}/releases/tags/${encodeURIComponent(manifest.tag)}`);
   if(release.draft||release.tag_name!==manifest.tag)throw new Error('A published release is required for public-download verification');
   await checkTagCommit(api,expected);
+  await checkRemoteAssets(release,manifest,directory);
   await mkdir(output,{recursive:false});
   for(const filename of releaseFiles(manifest)){
     const url=`https://github.com/${manifest.repository}/releases/download/${manifest.tag}/${filename}`;
@@ -95,8 +109,9 @@ async function content(api,repository,file,ref){
 export async function openFormulaPullRequest({directory,api,...expected}){
   const manifest=await verified(directory,expected);
   const release=await api.request('GET',`/repos/${manifest.repository}/releases/tags/${encodeURIComponent(manifest.tag)}`);
-  if(release.draft)throw new Error('Refusing a formula PR for an unpublished release');
+  if(release.draft||release.tag_name!==manifest.tag)throw new Error('Refusing a formula PR for an unpublished or mismatched release');
   await checkTagCommit(api,expected);
+  await checkRemoteAssets(release,manifest,directory);
   const repository=manifest.repository,owner=repository.split('/')[0];
   const {default_branch:base}=await api.request('GET',`/repos/${repository}`);
   const baseRef=await api.request('GET',`/repos/${repository}/git/ref/heads/${encodeURIComponent(base)}`);
@@ -117,7 +132,7 @@ export async function openFormulaPullRequest({directory,api,...expected}){
     head=await api.request('POST',`/repos/${repository}/git/refs`,{ref:`refs/heads/${branch}`,sha:commit.sha});
   }
   const existing=await api.request('GET',`/repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&base=${encodeURIComponent(base)}`);
-  const pull=existing[0]??await api.request('POST',`/repos/${repository}/pulls`,{title:`Homebrew: docm ${manifest.version}`,head:branch,base,body:`Publishes the formula for [${manifest.tag}](${release.html_url}).\n\nRelease assets, source build, and installation from the public downloads passed the release workflow. No changes are made to the default branch until this PR is merged.`});
+  const pull=existing[0]??await api.request('POST',`/repos/${repository}/pulls`,{title:`Homebrew: docm ${manifest.version}`,head:branch,base,body:`Publishes the macOS arm64 and Linux x64 source formula for [${manifest.tag}](${release.html_url}).\n\nBoth native source builds and Homebrew installations are verified by the release workflow. The complete merged asset set is checksummed against this formula's portable receipt. No changes are made to the default branch until this PR is merged.`});
   // GITHUB_TOKEN-originated events cannot be relied on to start unapproved CI.
   // workflow_dispatch is explicitly supported without an additional PAT.
   await api.request('POST',`/repos/${repository}/actions/workflows/ci.yml/dispatches`,{ref:branch});

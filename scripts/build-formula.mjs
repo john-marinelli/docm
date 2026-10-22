@@ -1,6 +1,7 @@
 import {cp,lstat,mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
 import path from 'node:path';
-import {digest,discoverTools,inside,lockedElectron,pins,root,run,tree,validateElectron} from './prepare-formula.mjs';
+import {discoverTools,inside,lockedElectron,root,run,tree,validateElectron,validateElectronMetadata,validateStoreMetadata} from './prepare-formula.mjs';
+import {hostPlatform,packageDirectory} from './platform.mjs';
 
 async function absent(file){
   try{await lstat(file);}catch(error){if(error.code==='ENOENT')return;throw error;}
@@ -13,6 +14,7 @@ async function resource(variable,name){
   return directory;
 }
 
+const platform=hostPlatform();
 // Never reuse a checkout's output, installed dependency tree, or a previous app.
 for(const name of ['node_modules','out','dist'])await absent(path.join(root,name));
 await absent(path.join(root,'.build','third-party-notices'));
@@ -22,11 +24,11 @@ const electron=await resource('DOCM_FORMULA_ELECTRON','.formula-electron');
 const storeMetadata=JSON.parse(await readFile(path.join(store,'.docm-store.json'),'utf8'));
 const lock=await readFile(path.join(root,'pnpm-lock.yaml'));
 const workspace=await readFile(path.join(root,'pnpm-workspace.yaml'));
-if(storeMetadata.schema!==1||storeMetadata.lockSha256!==digest(lock)||storeMetadata.workspaceSha256!==digest(workspace)||storeMetadata.node!==pins.node||storeMetadata.pnpm!==pins.pnpm||storeMetadata.platform!=='darwin'||storeMetadata.arch!=='arm64')throw new Error('Frozen pnpm store does not match this source lockfile and toolchain');
+validateStoreMetadata(storeMetadata,lock,workspace,platform);
 const electronVersion=await lockedElectron();
 const runtimeMetadata=JSON.parse(await readFile(path.join(electron,'.docm-electron.json'),'utf8'));
-if(runtimeMetadata.schema!==1||runtimeMetadata.name!=='electron'||runtimeMetadata.version!==electronVersion||runtimeMetadata.platform!=='darwin'||runtimeMetadata.arch!=='arm64'||runtimeMetadata.package?.name!=='electron'||runtimeMetadata.package.version!==electronVersion)throw new Error('Electron resource does not match the frozen source dependency');
-await validateElectron(electron,electronVersion);
+validateElectronMetadata(runtimeMetadata,electronVersion,platform);
+await validateElectron(electron,electronVersion,platform);
 
 const state=path.join(root,'.formula-build');
 await mkdir(state,{recursive:true});
@@ -45,22 +47,26 @@ if(packageMetadata.name!=='electron'||packageMetadata.version!==electronVersion)
 const dist=path.join(packageRoot,'dist');
 await absent(dist);
 await cp(electron,dist,{recursive:true,dereference:false,verbatimSymlinks:true,filter:source=>path.basename(source)!=='.docm-electron.json'});
-await writeFile(path.join(packageRoot,'path.txt'),'Electron.app/Contents/MacOS/Electron');
-await validateElectron(dist,electronVersion);
+await writeFile(path.join(packageRoot,'path.txt'),platform.os==='darwin'?'Electron.app/Contents/MacOS/Electron':'electron');
+await validateElectron(dist,electronVersion,platform);
 // Homebrew preserves @rpath IDs, but otherwise rewrites them to long absolute
 // Cellar paths. Normalize copied loader-relative IDs before packaging re-signs
 // the bundle; dependency load commands and the upstream resource stay intact.
-for(const entry of await tree(dist)){
-  if(entry.type!=='file'||!entry.name.endsWith('.dylib'))continue;
-  const library=path.join(dist,entry.name);
-  const id=(await run('/usr/bin/otool',['-D',library],{capture:true})).split('\n')[1]?.trim();
-  if(id?.startsWith('@rpath/'))continue;
-  if(!id?.startsWith('@loader_path/'))throw new Error(`Unexpected upstream dylib ID: ${library}: ${id}`);
-  await run('/usr/bin/install_name_tool',['-id',`@rpath/${path.posix.basename(id)}`,library]);
+if(platform.os==='darwin'){
+  for(const entry of await tree(dist)){
+    if(entry.type!=='file'||!entry.name.endsWith('.dylib'))continue;
+    const library=path.join(dist,entry.name);
+    const id=(await run('/usr/bin/otool',['-D',library],{capture:true})).split('\n')[1]?.trim();
+    if(id?.startsWith('@rpath/'))continue;
+    if(!id?.startsWith('@loader_path/'))throw new Error(`Unexpected upstream dylib ID: ${library}: ${id}`);
+    await run('/usr/bin/install_name_tool',['-id',`@rpath/${path.posix.basename(id)}`,library]);
+  }
 }
 await run(tools.pnpm,['run','typecheck'],{env});
-// PR signing is enabled only here, without credentials and with ad-hoc identity forced.
-await run(tools.pnpm,['run','package','--config.mac.identity=-','--config.mac.notarize=false'],{env:{...env,CSC_IDENTITY_AUTO_DISCOVERY:'false',CSC_FOR_PULL_REQUEST:'true'}});
-const app=path.join(root,'dist','mac-arm64','Docm.app');
-if(!(await lstat(app)).isDirectory()||(await lstat(app)).isSymbolicLink())throw new Error('Source packaging did not produce dist/mac-arm64/Docm.app');
+if(platform.os==='darwin'){
+  // PR signing is enabled only here, without credentials and with ad-hoc identity forced.
+  await run(tools.pnpm,['run','package','--config.mac.identity=-','--config.mac.notarize=false'],{env:{...env,CSC_IDENTITY_AUTO_DISCOVERY:'false',CSC_FOR_PULL_REQUEST:'true'}});
+}else await run(tools.pnpm,['run','package:linux'],{env});
+const output=packageDirectory(platform),app=path.join(root,output);
+if(!(await lstat(app)).isDirectory()||(await lstat(app)).isSymbolicLink())throw new Error(`Source packaging did not produce ${output}`);
 console.error(`Built docm from clean frozen source: ${app}`);

@@ -13,6 +13,7 @@
     "test": "vitest run",
     "notices:prepare": "node scripts/prepare-notices.mjs",
     "package": "pnpm run build && pnpm run notices:prepare && electron-builder --mac --dir --arm64 --publish never --config.electronDist=node_modules/electron/dist",
+    "package:linux": "pnpm run build && pnpm run notices:prepare && electron-builder --linux --dir --x64 --publish never --config.electronDist=node_modules/electron/dist",
     "smoke": "node scripts/smoke.mjs",
     "build:smoke": "node scripts/build-smoke.mjs",
     "package:smoke": "node scripts/smoke.mjs --packaged",
@@ -25,6 +26,7 @@
     "release:version": "node scripts/version.mjs bump",
     "release:check": "node scripts/version.mjs check-tag",
     "release:prepare": "node scripts/release.mjs prepare",
+    "release:merge": "node scripts/release.mjs merge",
     "release:smoke": "node scripts/release-smoke.mjs source",
     "release:homebrew": "node scripts/release-smoke.mjs homebrew",
     "release:github": "node scripts/release-github.mjs"
@@ -62,6 +64,10 @@
       "timestamp": "none",
       "hardenedRuntime": false,
       "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "executableName": "docm",
+      "category": "Office"
     }
   },
   "dependencies": {

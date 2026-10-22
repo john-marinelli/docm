@@ -23,6 +23,18 @@ while :; do
   esac
 done
 
-app=$(CDPATH= cd -P "$directory/../../.." && pwd -P)
 unset ELECTRON_RUN_AS_NODE
-exec "$app/Contents/MacOS/docm" --cli "$@"
+case $(uname -s) in
+  Darwin)
+    app=$(CDPATH= cd -P "$directory/../../.." && pwd -P)
+    exec "$app/Contents/MacOS/docm" --cli "$@"
+    ;;
+  Linux)
+    app=$(CDPATH= cd -P "$directory/../.." && pwd -P)
+    exec "$app/docm" --cli "$@"
+    ;;
+  *)
+    printf '%s\n' 'docm supports macOS and Linux only' >&2
+    exit 1
+    ;;
+esac

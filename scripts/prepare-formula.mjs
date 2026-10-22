@@ -1,12 +1,13 @@
 import {createHash} from 'node:crypto';
 import {constants,createReadStream,createWriteStream} from 'node:fs';
-import {access,chmod,copyFile,lstat,mkdir,mkdtemp,readFile,readdir,readlink,realpath,rename,rm,symlink,utimes,writeFile} from 'node:fs/promises';
+import {access,chmod,copyFile,lstat,lutimes,mkdir,mkdtemp,open,readFile,readdir,readlink,realpath,rename,rm,symlink,utimes,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {pipeline} from 'node:stream/promises';
 import {fileURLToPath} from 'node:url';
 import {createGzip} from 'node:zlib';
 import {readVersion} from './version.mjs';
+import {hostPlatform,nodeResourceUrl,platformKey,pnpmResourceUrl} from './platform.mjs';
 
 export const root=path.resolve(import.meta.dirname,'..');
 function toolPins(config){
@@ -60,7 +61,7 @@ async function exists(file){
 }
 
 export async function discoverTools(cwd=root){
-  if(process.platform!=='darwin'||process.arch!=='arm64')throw new Error('Formula preparation/build requires native macOS arm64');
+  hostPlatform();
   const node=await realpath(process.execPath);
   let pnpm;
   for(const directory of (process.env.PATH||'').split(path.delimiter)){
@@ -92,26 +93,23 @@ async function releaseResponse(url){
   return response;
 }
 
-export function pnpmResourceUrl(version){
-  return `https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-${version}.tgz`;
-}
-
-async function toolResources(){
-  const nodeFilename=`node-v${pins.node}-darwin-arm64.tar.xz`;
+async function toolResources(platform=hostPlatform()){
+  const target=platformKey(platform),nodeUrl=nodeResourceUrl(pins.node,platform);
+  const nodeFilename=path.posix.basename(nodeUrl);
   const nodeBase=`https://nodejs.org/dist/v${pins.node}/`;
   const checksums=await (await releaseResponse(`${nodeBase}SHASUMS256.txt`)).text();
   const matches=checksums.split(/\r?\n/).map(line=>line.match(/^([a-fA-F0-9]{64})\s+\*?(\S+)$/)).filter(match=>match?.[2]===nodeFilename);
   if(matches.length!==1)throw new Error(`Official Node ${pins.node} checksums must identify exactly ${nodeFilename}`);
-  const metadata=await (await releaseResponse(`https://registry.npmjs.org/@pnpm%2Fexe.darwin-arm64/${pins.pnpm}`)).json();
-  const pnpmUrl=pnpmResourceUrl(pins.pnpm);
-  if(metadata.name!=='@pnpm/exe.darwin-arm64'||metadata.version!==pins.pnpm||metadata.dist?.tarball!==pnpmUrl)throw new Error(`Registry metadata must identify the official native darwin-arm64 pnpm ${pins.pnpm} archive`);
+  const metadata=await (await releaseResponse(`https://registry.npmjs.org/@pnpm%2Fexe.${target}/${pins.pnpm}`)).json();
+  const pnpmUrl=pnpmResourceUrl(pins.pnpm,platform);
+  if(metadata.name!==`@pnpm/exe.${target}`||metadata.version!==pins.pnpm||metadata.dist?.tarball!==pnpmUrl)throw new Error(`Registry metadata must identify the official native ${target} pnpm ${pins.pnpm} archive`);
   const integrity=metadata.dist?.integrity;
   if(typeof integrity!=='string'||!/^sha512-[A-Za-z0-9+/]{86}==$/.test(integrity))throw new Error(`Official pnpm ${pins.pnpm} metadata must include a SHA-512 package integrity`);
   const upstream=createHash('sha512'),sha256=createHash('sha256');
   const response=await releaseResponse(pnpmUrl);
   for await(const chunk of response.body){upstream.update(chunk);sha256.update(chunk);}
   if(`sha512-${upstream.digest('base64')}`!==integrity)throw new Error(`Official pnpm ${pins.pnpm} package archive failed registry integrity validation`);
-  return [{name:'node',url:`${nodeBase}${nodeFilename}`,sha256:matches[0][1].toLowerCase()},{name:'pnpm',url:pnpmUrl,sha256:sha256.digest('hex')}];
+  return [{name:'node',url:nodeUrl,sha256:matches[0][1].toLowerCase()},{name:'pnpm',url:pnpmUrl,sha256:sha256.digest('hex')}];
 }
 
 export async function lockedElectron(project=root){
@@ -143,10 +141,40 @@ export async function tree(directory){
   await visit('');
   return entries;
 }
+// Inspect headers rather than executing an untrusted staged Electron binary.
+export async function validateElf(binary){
+  const file=await open(binary,'r'),header=Buffer.alloc(64);
+  try{
+    const {bytesRead}=await file.read(header,0,header.length,0);
+    if(bytesRead!==64||header.subarray(0,4).toString('hex')!=='7f454c46'||header[4]!==2||header[5]!==1||header[6]!==1||![2,3].includes(header.readUInt16LE(16))||header.readUInt16LE(18)!==62||header.readUInt32LE(20)!==1||header.readUInt16LE(52)!==64)throw new Error(`Expected x64 ELF upstream Electron binary: ${binary}`);
+  }finally{await file.close();}
+}
 
-export async function validateElectron(directory,version){
+export function validateStoreMetadata(metadata,lock,workspace,platform=hostPlatform()){
+  platformKey(platform);
+  if(metadata.schema!==1||metadata.lockSha256!==digest(lock)||metadata.workspaceSha256!==digest(workspace)||metadata.node!==pins.node||metadata.pnpm!==pins.pnpm||metadata.platform!==platform.os||metadata.arch!==platform.arch)throw new Error('Frozen pnpm store does not match this source lockfile and native toolchain');
+}
+
+export function validateElectronMetadata(metadata,version,platform=hostPlatform()){
+  platformKey(platform);
+  if(metadata.schema!==1||metadata.name!=='electron'||metadata.version!==version||metadata.platform!==platform.os||metadata.arch!==platform.arch||metadata.package?.name!=='electron'||metadata.package.version!==version)throw new Error('Electron resource does not match the frozen source dependency and native platform');
+}
+
+export async function validateElectron(directory,version,platform=hostPlatform()){
+  platformKey(platform);
   if((await readFile(path.join(directory,'version'),'utf8')).trim()!==version)throw new Error(`Electron resource must be exactly ${version}`);
   for(const license of ['LICENSE','LICENSES.chromium.html'])if(!(await lstat(path.join(directory,license))).isFile())throw new Error(`Electron runtime is missing ${license}`);
+  if(platform.os==='linux'){
+    for(const name of ['electron','chrome-sandbox']){
+      const binary=path.join(directory,name),info=await lstat(binary);
+      if(!info.isFile()||info.isSymbolicLink()||!(info.mode&0o111))throw new Error(`Electron runtime is missing executable ${name}`);
+      await validateElf(binary);
+    }
+    for(const entry of await tree(directory)){
+      if(entry.type==='file'&&/\.so(?:\.\d+)*$/.test(entry.name))await validateElf(path.join(directory,entry.name));
+    }
+    return;
+  }
   const executable=path.join(directory,'Electron.app','Contents','MacOS','Electron');
   const framework=path.join(directory,'Electron.app','Contents','Frameworks','Electron Framework.framework','Electron Framework');
   for(const binary of [executable,framework]){
@@ -164,12 +192,12 @@ async function copyEntries(from,to,entries){
     else if(entry.type==='link')await symlink(entry.target,destination);
     else {await copyFile(source,destination);await chmod(destination,entry.mode);}
   }
-  for(const entry of [...entries].reverse())if(entry.type!=='link')await utimes(path.join(to,entry.name),0,0);
+  for(const entry of [...entries].reverse())await (entry.type==='link'?lutimes:utimes)(path.join(to,entry.name),0,0);
 }
 
-async function archive(directory,name,label){
+async function archive(directory,name,label,platform=hostPlatform()){
   const entries=await tree(directory),identity=digest(JSON.stringify(entries));
-  const destination=path.join(inputs,`${label}-${identity}.tar.gz`),receipt=`${destination}.json`;
+  const destination=path.join(inputs,`${label}-${platformKey(platform)}-${identity}.tar.gz`),receipt=`${destination}.json`;
   if(await exists(destination)){
     const recorded=JSON.parse(await readFile(receipt,'utf8'));
     if(recorded.treeSha256!==identity||recorded.sha256!==await fileDigest(destination))throw new Error(`Frozen archive was modified: ${destination}`);
@@ -181,7 +209,10 @@ async function archive(directory,name,label){
     const list=path.join(stage,'entries');
     await writeFile(list,entries.map(entry=>path.posix.join(name,entry.name)).join('\0')+'\0');
     const tar=path.join(stage,'archive.tar'),compressed=path.join(stage,'archive.tar.gz');
-    await run('/usr/bin/tar',['-c','--format','pax','--no-xattrs','--no-acls','--no-fflags','--uid','0','--gid','0','--uname','root','--gname','wheel','--no-recursion','-f',tar,'-C',stage,'--null','-T',list]);
+    const metadata=platform.os==='darwin'
+      ?['--format','pax','--no-xattrs','--no-acls','--no-fflags','--uid','0','--gid','0','--uname','root','--gname','wheel']
+      :['--format=pax','--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime','--no-xattrs','--no-acls','--no-selinux','--owner=0','--group=0','--numeric-owner'];
+    await run('/usr/bin/tar',['-c',...metadata,'--no-recursion','-f',tar,'-C',stage,'--null','-T',list]);
     await pipeline(createReadStream(tar),createGzip({level:9}),createWriteStream(compressed,{flags:'wx'}));
     const sha256=await fileDigest(compressed);
     await rename(compressed,destination);
@@ -213,10 +244,10 @@ async function sourceSnapshot(stage,version){
   return {directory,sourceFiles:selected.filter(entry=>entry.type==='file').map(entry=>entry.name)};
 }
 
-async function storeResource(stage,tools){
+async function storeResource(stage,tools,platform=hostPlatform()){
   const lock=await readFile(path.join(root,'pnpm-lock.yaml'));
   const workspace=await readFile(path.join(root,'pnpm-workspace.yaml'));
-  const metadata={schema:1,lockSha256:digest(lock),workspaceSha256:digest(workspace),...pins,platform:'darwin',arch:'arm64'};
+  const metadata={schema:1,lockSha256:digest(lock),workspaceSha256:digest(workspace),...pins,platform:platform.os,arch:platform.arch};
   // Only acquisition changes invalidate this cache; source/release helpers do not.
   const key=digest(JSON.stringify(metadata)+storeResource.toString());
   const receipt=path.join(inputs,`store-${key}.json`);
@@ -238,14 +269,15 @@ async function storeResource(stage,tools){
   // cache bookkeeping, not package content; never ship those host-path links.
   await rm(path.join(store,'v11','projects'),{recursive:true,force:true});
   await writeFile(path.join(store,'.docm-store.json'),JSON.stringify(metadata,null,2)+'\n');
-  const result=await archive(store,'store','pnpm-store');
+  const result=await archive(store,'store','pnpm-store',platform);
   await writeFile(receipt,JSON.stringify(result)+'\n',{flag:'wx'});
   return result;
 }
 
 export async function prepare(){
+  const platform=hostPlatform();
   const tools=await discoverTools();
-  const releases=await toolResources();
+  const releases=await toolResources(platform);
   const metadata=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
   if(metadata.name!=='docm')throw new Error('Expected the docm package');
   metadata.version=await readVersion();
@@ -254,18 +286,18 @@ export async function prepare(){
   const electronMetadata=JSON.parse(await readFile(path.join(electronPackage,'package.json'),'utf8'));
   if(electronMetadata.name!=='electron'||electronMetadata.version!==version)throw new Error('Installed Electron package does not match the frozen lockfile');
   const electronDist=path.join(electronPackage,'dist');
-  await validateElectron(electronDist,version);
+  await validateElectron(electronDist,version,platform);
   await mkdir(inputs,{recursive:true});
   const stage=await mkdtemp(path.join(inputs,'.prepare-'));
   try{
-    const pnpm=await storeResource(stage,tools);
+    const pnpm=await storeResource(stage,tools,platform);
     const electron=path.join(stage,'electron');
     await copyEntries(electronDist,electron,await tree(electronDist));
-    await writeFile(path.join(electron,'.docm-electron.json'),JSON.stringify({schema:1,name:'electron',version,platform:'darwin',arch:'arm64',upstream:'https://github.com/electron/electron',package:electronMetadata},null,2)+'\n');
-    const runtime=await archive(electron,'electron',`electron-${version}-darwin-arm64`);
+    await writeFile(path.join(electron,'.docm-electron.json'),JSON.stringify({schema:1,name:'electron',version,platform:platform.os,arch:platform.arch,upstream:'https://github.com/electron/electron',package:electronMetadata},null,2)+'\n');
+    const runtime=await archive(electron,'electron',`electron-${version}`,platform);
     const source=await sourceSnapshot(stage,metadata.version);
-    const sourceArchive=await archive(source.directory,`docm-${metadata.version}`,`docm-${metadata.version}-source`);
-    const manifest={schema:1,project:root,version:metadata.version,source:sourceArchive,resources:[{name:'pnpm-store',...pnpm},{name:'electron',...runtime}],toolResources:releases,tools:{...pins},sourceFiles:source.sourceFiles};
+    const sourceArchive=await archive(source.directory,`docm-${metadata.version}`,`docm-${metadata.version}-source`,platform);
+    const manifest={schema:1,project:root,platform,version:metadata.version,source:sourceArchive,resources:[{name:'pnpm-store',...pnpm},{name:'electron',...runtime}],toolResources:releases,tools:{...pins},sourceFiles:source.sourceFiles};
     const destination=path.join(inputs,'manifest.json'),bytes=JSON.stringify(manifest,null,2)+'\n';
     if(!await exists(destination)||await readFile(destination,'utf8')!==bytes){
       await writeFile(path.join(stage,'manifest.json'),bytes);

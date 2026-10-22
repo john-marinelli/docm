@@ -16,7 +16,11 @@ import type { ExportResult, PreviewUpdate } from '../shared/types.js';
 console = new Console({ stdout: process.stderr, stderr: process.stderr });
 app.commandLine.appendSwitch('enable-logging', 'stderr');
 const invocationCwd = process.cwd();
-const globalThemePath = path.join(os.homedir(), 'Library', 'Application Support', 'docm', 'theme.toml');
+const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+const configDirectory = process.platform === 'linux'
+  ? xdgConfigHome && path.isAbsolute(xdgConfigHome) ? xdgConfigHome : path.join(os.homedir(), '.config')
+  : path.join(os.homedir(), 'Library', 'Application Support');
+const globalThemePath = path.join(configDirectory, 'docm', 'theme.toml');
 const nativeArguments = process.argv.slice(process.defaultApp ? 2 : 1);
 const markerIndex = nativeArguments.indexOf('--cli');
 const separatorIndex = nativeArguments.indexOf('--');
@@ -30,7 +34,7 @@ try {
   if (error instanceof CommanderError) parseExit = error.exitCode;
   else { console.error(error instanceof Error ? error.message : String(error)); parseExit = 2; }
 }
-if (request?.mode === 'render' || parseExit !== undefined) app.setActivationPolicy('prohibited');
+if (process.platform === 'darwin' && (request?.mode === 'render' || parseExit !== undefined)) app.setActivationPolicy('prohibited');
 
 let previewWindow: BrowserWindow | undefined;
 let previewSession: PreviewSession | undefined;
@@ -127,7 +131,7 @@ async function openPreview(sourcePath: string, cwd: string, configPath?: string)
     return exporting;
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { role: 'appMenu' },
+    process.platform === 'darwin' ? { role: 'appMenu' } : { label: 'File', submenu: [{ role: 'quit' }] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { role: 'windowMenu' },
   ]));

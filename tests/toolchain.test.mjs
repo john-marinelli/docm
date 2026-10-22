@@ -2,7 +2,7 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {afterEach,expect,it} from 'vitest';
-import {readToolPins} from '../scripts/prepare-formula.mjs';
+import {digest,pins,readToolPins,validateElectronMetadata,validateStoreMetadata} from '../scripts/prepare-formula.mjs';
 
 const roots=[];
 afterEach(async()=>{await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
@@ -28,4 +28,27 @@ it.each([
   ['[tools]\nnode = { version = "26.10.0" }\npnpm = "12.10.1"\n','node must be a quoted exact version'],
 ])('rejects ambiguous or missing version declarations',async(text,message)=>{
   await expect(readToolPins(await config(text))).rejects.toThrow(message);
+});
+
+const targets=[{os:'darwin',arch:'arm64'},{os:'linux',arch:'x64'}];
+it.each(targets)('accepts only the matching native frozen pnpm store for $os-$arch',platform=>{
+  const lock=Buffer.from('frozen lockfile'),workspace=Buffer.from('frozen workspace');
+  const metadata={schema:1,lockSha256:digest(lock),workspaceSha256:digest(workspace),...pins,platform:platform.os,arch:platform.arch};
+  for(const other of targets.filter(target=>target.os!==platform.os)){
+    expect(()=>validateStoreMetadata(metadata,lock,workspace,other)).toThrow(/native toolchain/);
+  }
+  for(const changed of [{arch:'arm64-invalid'},{lockSha256:digest('other lockfile')},{workspaceSha256:digest('other workspace')},{node:'0.0.0'},{pnpm:'0.0.0'},{schema:2}]){
+    expect(()=>validateStoreMetadata({...metadata,...changed},lock,workspace,platform)).toThrow(/frozen pnpm store/i);
+  }
+});
+
+it.each(targets)('rejects an Electron receipt from a different target or dependency for $os-$arch',platform=>{
+  const version='42.0.0';
+  const metadata={schema:1,name:'electron',version,platform:platform.os,arch:platform.arch,package:{name:'electron',version}};
+  for(const other of targets.filter(target=>target.os!==platform.os)){
+    expect(()=>validateElectronMetadata(metadata,version,other)).toThrow(/native platform/);
+  }
+  for(const changed of [{arch:'wrong'},{version:'41.0.0'},{package:{name:'electron',version:'41.0.0'}},{package:{name:'not-electron',version}},{schema:2}]){
+    expect(()=>validateElectronMetadata({...metadata,...changed},version,platform)).toThrow(/Electron resource/);
+  }
 });

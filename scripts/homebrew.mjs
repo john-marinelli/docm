@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, constants } from 'node:fs';
-import { access, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { pins, pnpmResourceUrl } from './prepare-formula.mjs';
+import { pins } from './prepare-formula.mjs';
+import { executableRelative, hostPlatform, launcherRelative, nodeResourceUrl, platformKey, pnpmResourceUrl } from './platform.mjs';
 import { renderFormula } from './formula.mjs';
 import { readVersion, validateTag } from './version.mjs';
 
@@ -24,6 +25,9 @@ delete brewEnv.HOMEBREW_CASK_OPTS;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validIdentity = value => value && Number.isSafeInteger(value.dev) && Number.isSafeInteger(value.ino);
+const platform = hostPlatform();
+const macOS = platform.os === 'darwin';
+const installedDirectory = macOS ? 'Docm.app' : 'docm-linux';
 
 function conflict(location, reason) {
   throw new Error(`Refusing local docm formula: ${location}: ${reason}. No unrelated installation will be adopted or replaced.`);
@@ -104,12 +108,15 @@ async function readManifest() {
   const value = await readJson(manifestPath);
   if (value.project !== project || value.tapName !== tapName) conflict(manifestPath, 'ownership belongs to another project/tap');
   if (value.schema === 1) {
+    if (!macOS) conflict(manifestPath, 'legacy cask ownership can migrate only on macOS arm64');
     if (value.state !== 'installed' || value.generatedCask !== legacyCask || value.appdir !== legacyAppdir) conflict(manifestPath, 'only a complete recorded schema1 installation can migrate');
     for (const field of ['archiveSha256', 'sourceAppSha256', 'caskSha256', 'generatedTapSha256', 'tapSha256']) if (!validHash(value[field])) conflict(manifestPath, `invalid legacy ${field}`);
     for (const field of ['generatedTapIdentity', 'tapIdentity', 'appdirIdentity', 'appIdentity']) if (!validIdentity(value[field])) conflict(manifestPath, `invalid legacy ${field}`);
     return value;
   }
   if (value.schema !== 2 || value.generatedFormula !== generatedFormula || !['prepared', 'installed', 'mutating', 'mutation-failed'].includes(value.state)) conflict(manifestPath, 'invalid source-formula ownership record');
+  if (value.platform ? value.platform.os !== platform.os || value.platform.arch !== platform.arch : !macOS) conflict(manifestPath, 'ownership was prepared for another platform or lacks native platform identity');
+  if (value.inputs?.platform && (value.inputs.platform.os !== platform.os || value.inputs.platform.arch !== platform.arch)) conflict(manifestPath, 'recorded source/resource platform differs from the native host');
   if (['mutating', 'mutation-failed'].includes(value.state)) conflict(manifestPath, `interrupted ${value.transaction?.kind ?? 'mutation'} at ${value.transaction?.stage ?? 'unknown stage'}; inspect recorded failure before further mutation`);
   for (const field of ['inputsSha256', 'formulaSha256', 'generatedTapSha256']) if (!validHash(value[field])) conflict(manifestPath, `invalid ${field}`);
   if (!value.inputs || sha(JSON.stringify(value.inputs)) !== value.inputsSha256) conflict(manifestPath, 'recorded source/resource inputs checksum changed');
@@ -122,14 +129,15 @@ async function distribution() {
   const tools = pins;
   if (inputs.version !== await readVersion()) conflict(inputsPath, 'application version changed; regenerate formula inputs for explicit refresh');
   if (inputs.schema !== 1 || inputs.project !== project || inputs.tools?.node !== tools.node || inputs.tools?.pnpm !== tools.pnpm || Object.keys(inputs.tools).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'invalid source/resource/tool contract; regenerate formula inputs');
+  if (inputs.platform?.os !== platform.os || inputs.platform?.arch !== platform.arch || Object.keys(inputs.platform).sort().join(',') !== 'arch,os') conflict(inputsPath, 'source/resources must be prepared for the native platform');
   for (const version of Object.values(tools)) {
     try { validateTag(`v${version}`, version); } catch { conflict(inputsPath, 'invalid pinned tool version'); }
   }
   if (!Array.isArray(inputs.resources) || inputs.resources.length !== 2 || inputs.resources.map(item => item.name).sort().join(',') !== 'electron,pnpm-store') conflict(inputsPath, 'expected exactly electron and pnpm-store resources');
   if (!Array.isArray(inputs.toolResources) || inputs.toolResources.length !== 2 || inputs.toolResources.map(item => item?.name).sort().join(',') !== 'node,pnpm') conflict(inputsPath, 'expected exactly node and pnpm tool resources; regenerate formula inputs');
   const toolUrls = {
-    node: `https://nodejs.org/dist/v${tools.node}/node-v${tools.node}-darwin-arm64.tar.xz`,
-    pnpm: pnpmResourceUrl(tools.pnpm),
+    node: nodeResourceUrl(tools.node, platform),
+    pnpm: pnpmResourceUrl(tools.pnpm, platform),
   };
   for (const item of inputs.toolResources) {
     if (Object.keys(item).sort().join(',') !== 'name,sha256,url' || item.url !== toolUrls[item.name] || !validHash(item.sha256)) conflict(inputsPath, 'invalid official pinned tool resource URL/checksum');
@@ -139,12 +147,15 @@ async function distribution() {
     if (await hashFile(item.archive) !== item.sha256) conflict(item.archive, 'source/resource checksum differs from preparation manifest');
   }
   const inputsSha256 = sha(JSON.stringify(inputs));
-  const provenance = { schema: 1, project, version: inputs.version, inputsSha256, source: inputs.source, resources: inputs.resources, tools: inputs.tools, toolResources: inputs.toolResources };
+  const provenance = { schema: 1, project, platform, version: inputs.version, inputsSha256, source: inputs.source, resources: inputs.resources, tools: inputs.tools, toolResources: inputs.toolResources };
   const formula = renderFormula({
     version: inputs.version,
     homepage: pathToFileURL(project + path.sep).href,
-    source: { url: pathToFileURL(inputs.source.archive).href, sha256: inputs.source.sha256 },
-    resources: [...inputs.resources.map(item => ({ ...item, url: pathToFileURL(item.archive).href })), ...inputs.toolResources],
+    targets: [{
+      platform,
+      source: { url: pathToFileURL(inputs.source.archive).href, sha256: inputs.source.sha256 },
+      resources: [...inputs.resources.map(item => ({ ...item, url: pathToFileURL(item.archive).href })), ...inputs.toolResources],
+    }],
     receipt: provenance,
   });
   return { inputs, inputsSha256, formula, formulaSha256: sha(formula), provenance };
@@ -153,7 +164,7 @@ async function brewContext() {
   const brew = await findExecutable('brew');
   const prefix = await run(brew, ['--prefix']);
   const repository = await run(brew, ['--repository']);
-  const caskroom = await run(brew, ['--caskroom']);
+  const caskroom = macOS ? await run(brew, ['--caskroom']) : path.join(prefix, 'Caskroom');
   const cellar = await run(brew, ['--cellar']);
   const tap = path.join(repository, 'Library/Taps/docm/homebrew-local');
   return { brew, prefix, repository, caskroom, cellar, tap, tapFormula: path.join(tap, 'Formula/docm.rb'), tapCask: path.join(tap, 'Casks/docm.rb'), binary: path.join(prefix, 'bin/docm') };
@@ -207,10 +218,10 @@ async function verifyLegacy(context, legacy, { generatedTree = true } = {}) {
   if (data.casks?.length !== 1 || item.tap !== tapName || item.token !== 'docm' || item.installed !== legacy.version || item.sha256 !== legacy.archiveSha256 || item.url !== pathToFileURL(legacy.archive).href) conflict(context.caskroom, 'legacy installed Homebrew identity does not match the full recorded cask');
 }
 async function installedNames(context, kind) {
+  if (!macOS && kind === '--cask') return [];
   return (await run(context.brew, ['list', kind, '--versions'])).split('\n').filter(line => /^(?:\S+\/)?docm(?:\s|$)/.test(line));
 }
 async function preflight(context, record) {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Source formula requires native macOS arm64.');
   if (record) verifyContext(context, record);
   const legacy = record?.schema === 1 ? record : record?.legacy;
   if (record?.schema === 1) await verifyLegacy(context, record);
@@ -231,7 +242,7 @@ async function preflight(context, record) {
   else if (!legacy) {
     for (const location of [context.binary, path.join(context.cellar, 'docm'), path.join(context.caskroom, 'docm')]) if (await exists(location)) conflict(location, 'partial/unowned installation cannot be adopted');
   }
-  for (const candidate of ['/Applications/Docm.app', path.join(homedir(), 'Applications/Docm.app'), path.join(context.prefix, 'Applications/Docm.app')]) if (await exists(candidate)) conflict(candidate, 'unrelated Docm.app exists');
+  if (macOS) for (const candidate of ['/Applications/Docm.app', path.join(homedir(), 'Applications/Docm.app'), path.join(context.prefix, 'Applications/Docm.app')]) if (await exists(candidate)) conflict(candidate, 'unrelated Docm.app exists');
   if (!legacy && await exists(legacyAppdir) && (await readdir(legacyAppdir)).length) conflict(legacyAppdir, 'unrecorded legacy app contents');
   for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
     const candidate = path.resolve(directory || '.', 'docm');
@@ -247,8 +258,21 @@ async function preflight(context, record) {
   }
 }
 async function verifyBundle(bundle, version) {
-  for (const relative of ['Contents/Resources/texlive', 'Contents/Resources/runtime-lock.json', 'Contents/Resources/node_modules']) if (await exists(path.join(bundle, relative))) conflict(bundle, `obsolete runtime resource ${relative}`);
-  for (const relative of ['Contents/Resources/app.asar', 'Contents/Resources/bin/docm', 'Contents/Resources/third-party-notices/index.json']) await regular(path.join(bundle, relative));
+  const resources = macOS ? 'Contents/Resources' : 'resources';
+  for (const relative of ['texlive', 'runtime-lock.json', 'node_modules']) if (await exists(path.join(bundle, resources, relative))) conflict(bundle, `obsolete runtime resource ${relative}`);
+  for (const relative of ['app.asar', 'bin/docm', 'third-party-notices/index.json']) await regular(path.join(bundle, resources, relative));
+  if (!macOS) {
+    const executable = path.join(bundle, executableRelative(platform));
+    await regular(executable);
+    await access(executable, constants.X_OK);
+    const handle = await open(executable, 'r');
+    try {
+      const header = Buffer.alloc(20);
+      const { bytesRead } = await handle.read(header, 0, header.length, 0);
+      if (bytesRead !== header.length || header.subarray(0, 4).toString('hex') !== '7f454c46' || header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== 62) conflict(bundle, 'Electron is not a native Linux x64 ELF executable');
+    } finally { await handle.close(); }
+    return;
+  }
   const plist = path.join(bundle, 'Contents/Info.plist');
   for (const [key, expected] of [['CFBundleIdentifier', 'local.docm'], ['CFBundleShortVersionString', version], ['CFBundleExecutable', 'docm']]) if (await run('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', plist]) !== expected) conflict(bundle, `unexpected ${key}`);
   if (await run('/usr/bin/lipo', ['-archs', path.join(bundle, 'Contents/MacOS/docm')]) !== 'arm64') conflict(bundle, 'Electron is not arm64-only');
@@ -265,14 +289,14 @@ async function verifyInstalled(context, record, { capture = false } = {}) {
   const keg = path.join(context.cellar, 'docm', item.installed[0].version);
   if ((await readdir(path.join(context.cellar, 'docm'))).some(name => name !== item.installed[0].version)) conflict(context.cellar, 'unrecorded docm keg or files exist');
   await identity(keg);
-  const bundle = path.join(keg, 'libexec/Docm.app');
-  const launcher = path.join(bundle, 'Contents/Resources/bin/docm');
+  const bundle = path.join(keg, 'libexec', installedDirectory);
+  const launcher = path.join(bundle, launcherRelative(platform));
   const receiptPath = path.join(keg, 'INSTALL_RECEIPT.json');
   const receipt = await readJson(receiptPath);
   if (receipt.poured_from_bottle !== false || receipt.source?.tap !== tapName || receipt.source?.versions?.stable !== record.inputs.version) conflict(receiptPath, 'receipt is not this tap/version built from source');
   if (await hashFile(path.join(keg, '.brew/docm.rb')) !== record.formulaSha256) conflict(keg, 'installed formula differs from owned source recipe');
   const sourceReceipt = await readJson(path.join(keg, 'libexec/docm-source-receipt.json'));
-  const expected = { schema: 1, project, version: record.inputs.version, inputsSha256: record.inputsSha256, source: record.inputs.source, resources: record.inputs.resources, tools: record.inputs.tools, toolResources: record.inputs.toolResources };
+  const expected = { schema: 1, project, ...(record.inputs.platform ? { platform: record.inputs.platform } : {}), version: record.inputs.version, inputsSha256: record.inputsSha256, source: record.inputs.source, resources: record.inputs.resources, tools: record.inputs.tools, toolResources: record.inputs.toolResources };
   if (JSON.stringify(sourceReceipt) !== JSON.stringify(expected)) conflict(keg, 'installed source/resource provenance differs');
   await verifyLink(context.binary, launcher);
   await verifyLink(path.join(keg, 'bin/docm'), launcher);
@@ -313,7 +337,7 @@ async function prepare(context, previous, details) {
     if (previous.inputsSha256 !== details.inputsSha256 || previous.formulaSha256 !== details.formulaSha256) conflict(manifestPath, 'source/resources changed; use explicit formula:refresh for an installed formula');
     return previous;
   }
-  const record = { schema: 2, project, tapName, generatedFormula, ...context, state: 'prepared', inputs: details.inputs, inputsSha256: details.inputsSha256, formulaSha256: details.formulaSha256 };
+  const record = { schema: 2, project, platform, tapName, generatedFormula, ...context, state: 'prepared', inputs: details.inputs, inputsSha256: details.inputsSha256, formulaSha256: details.formulaSha256 };
   if (previous) {
     record.legacy = previous;
     for (const field of ['generatedTapIdentity', 'generatedTapSha256', 'tapIdentity', 'tapSha256']) record[field] = previous[field];
@@ -385,7 +409,8 @@ async function refresh(context, record, details) {
     record.transaction.target = { inputs: details.inputs, inputsSha256: details.inputsSha256, formulaSha256: details.formulaSha256 };
     await stage('replacing-owned-formulas');
     await writeOwnedFormula(generatedFormula, details.formula, record.formulaSha256);
-    await writeOwnedFormula(context.tapFormula, details.formula, record.formulaSha256);
+    if (record.tapIdentity) await writeOwnedFormula(context.tapFormula, details.formula, record.formulaSha256);
+    record.platform = platform;
     record.inputs = details.inputs; record.inputsSha256 = details.inputsSha256; record.formulaSha256 = details.formulaSha256;
     await updateTreeRecords(context, record);
     if (!installed) { record.state = 'prepared'; return; }
@@ -404,7 +429,7 @@ async function smoke(context, record) {
   if (record?.schema !== 2 || record.state !== 'installed' || record.legacy) throw new Error('Source-built installed formula required; run mise run formula:install first.');
   const installation = await verifyInstalled(context, record);
   const reportPath = path.join(build, 'formula-verification.json');
-  const report = { kind: 'source-formula-installed-smoke', verifiedAt: new Date().toISOString(), formula: formulaName, inputsSha256: record.inputsSha256, source: record.inputs.source, resources: record.inputs.resources, installation, executable: context.binary, checks: { sourceBuildReceipt: true, sourceResourceProvenance: true, ownership: true, homebrewLauncherLink: true, nativeArm64: true, adHocDeepSignature: true, quarantineAbsent: true }, smoke: { status: 'running' } };
+  const report = { kind: 'source-formula-installed-smoke', platform, verifiedAt: new Date().toISOString(), formula: formulaName, inputsSha256: record.inputsSha256, source: record.inputs.source, resources: record.inputs.resources, installation, executable: context.binary, checks: { sourceBuildReceipt: true, sourceResourceProvenance: true, ownership: true, homebrewLauncherLink: true, nativePlatform: platformKey(platform), ...(macOS ? { nativeArm64: true, adHocDeepSignature: true, quarantineAbsent: true } : { nativeLinuxX64: true }) }, smoke: { status: 'running' } };
   await atomicJson(reportPath, report);
   try {
     const { runSmoke } = await import('./smoke.mjs');
