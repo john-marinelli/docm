@@ -47,6 +47,17 @@ const fontAlias = cleanName.refine((value) => !['sans', 'mono', 'math'].includes
 const localPath = z.string().min(1).refine((value) => value.trim().length > 0 && !value.includes('\0') && !/^[A-Za-z][A-Za-z\d+.-]*:/.test(value), 'Expected a local filesystem path, not a URL');
 const fontPath = localPath.refine((value) => /\.(?:ttf|otf|woff2?)$/i.test(value), 'Expected a local .ttf, .otf, .woff, or .woff2 font');
 const fonts = z.record(fontAlias, fontPath);
+const formattingMacroName = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]*$/, 'Formatting macro names must start with an ASCII letter and contain only ASCII letters, digits, underscores, or hyphens');
+const formattingMacro = z.strictObject({
+  text_align: slotPosition.optional(),
+  float: z.enum(['left', 'right', 'none']).optional(),
+  width: positiveLength.optional(),
+  height: positiveLength.optional(),
+});
+const formattingMacros = z.record(formattingMacroName, formattingMacro.refine(
+  (value) => Object.values(value).some((setting) => setting !== undefined),
+  'Formatting macros require at least one setting',
+));
 
 const styleFields = {
   font,
@@ -152,6 +163,7 @@ export const layerSchema = z.strictObject({
   page: pageLayerSchema.optional(),
   document: documentSchema.partial().optional(),
   fonts: fonts.optional(),
+  macro: z.record(formattingMacroName, formattingMacro).optional(),
   body: elementStyleSchema.optional(),
   headings: headingsSchema.partial().optional(),
   paragraph: elementStyleSchema.optional(),
@@ -175,6 +187,7 @@ const configInputSchema = z.strictObject({
   page: pageSchema,
   document: documentSchema,
   fonts,
+  macro: formattingMacros,
   body: elementStyleSchema,
   headings: headingsSchema,
   paragraph: elementStyleSchema,

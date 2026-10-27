@@ -109,3 +109,64 @@ describe('heading and literal HTML authoring', () => {
     expect(result.images).toEqual([]);
   });
 });
+
+describe('formatting macro authoring', () => {
+  const macroOptions = { ...options, config: finalizeConfig({ ...defaults, macro: {
+    middle: { text_align: 'center' }, edge: { text_align: 'right' }, script: { text_align: 'left' },
+  } }) };
+
+  it('preserves Markdown blocks, heading metadata, and source positions inside nested macros', async () => {
+    const result = await prepareMarkdown([
+      '<middle>', '# *Title*', '', 'Paragraph **bold**.', '', '<edge>',
+      '- Item', '', '```unknown', '<middle>literal</middle>', '```', '',
+      '$$', 'x_g', '$$', '', '```mermaid', 'graph TD; A-->B;', '```', '',
+      '![Picture](local.png)', '</edge>', '</middle>', '', 'Outside',
+    ].join('\n'), { ...macroOptions, lineOffset: 10 });
+    expect(result.title).toBe('Title');
+    expect(result.headings).toEqual([{ id: 'title', level: 1, text: 'Title' }]);
+    expect(result.html).toContain('<h1 id="title"><em>Title</em></h1>');
+    expect(result.html).toContain('<strong>bold</strong>');
+    expect(result.html).toContain('<li>Item</li>');
+    expect(result.html).toMatch(/(?:&#x3C;|&lt;)middle>literal/);
+    expect(result.math[0]?.source).toEqual({ path: options.sourcePath, line: 23, column: 1 });
+    expect(result.diagrams[0]?.source.line).toBe(27);
+    expect(result.images[0]?.url).toBe('local.png');
+    expect(result.html).toMatch(/<\/div>\n<p>Outside<\/p>$/);
+  });
+
+  it('supports same-line tags, nested same-name tags, and macros spanning paragraphs', async () => {
+    const result = await prepareMarkdown('<middle>**First**\n\nSecond <middle>nested</middle></middle>\n\n<script>*Safe*</script>', macroOptions);
+    expect(result.html).toContain('<strong>First</strong>');
+    expect(result.html).toContain('Second ');
+    expect(result.html).toContain('nested</span>');
+    expect(result.html).toContain('<em>Safe</em>');
+    expect(result.html).not.toContain('<script>');
+    expect(result.html).not.toMatch(/(?:&#x3C;|&lt;)middle>/);
+  });
+
+  it('leaves code, math, escaped tags, unconfigured HTML, and attributes literal', async () => {
+    const result = await prepareMarkdown([
+      '`<middle>code</middle>`', '', '    <middle>indented</middle>', '',
+      'A `multiline', '<middle>', 'code` span.', '',
+      'A $multiline', '<middle>', 'math$ span.', '',
+      '$$', '<middle>', '$$', '',
+      '\\<middle>escaped\\</middle>', '',
+      '<unknown>literal</unknown>', '', '<middle class="bad">attributes',
+    ].join('\n'), macroOptions);
+    expect(result.html).not.toContain('class=\"docm-macro');
+    expect(result.html).toContain('class=\"docm-code');
+    expect(result.math.map(({ tex }) => tex)).toEqual(['multiline\n<middle>\nmath', '<middle>']);
+    expect(result.html).toMatch(/(?:&#x3C;|&lt;)unknown>/);
+    expect(result.html).toContain('class=\"bad\"');
+  });
+
+  it.each([
+    ['<middle>\nMissing', 'Unclosed macro tag <middle>', 1],
+    ['</edge>', 'Unexpected closing macro tag </edge>', 1],
+    ['<middle>\n<edge>\n</middle>\n</edge>', 'Unexpected closing macro tag </middle>', 3],
+  ])('rejects malformed scope with source diagnostics: %s', async (input, message, line) => {
+    await expect(prepareMarkdown(input, { ...macroOptions, lineOffset: 7 })).rejects.toMatchObject({
+      name: 'RenderError', message, source: { path: options.sourcePath, line: line + 7, column: 1 },
+    });
+  });
+});

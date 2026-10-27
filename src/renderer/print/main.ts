@@ -49,6 +49,23 @@ function availableWidth(element: HTMLElement): number {
   return parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
 }
 
+/** Explicit macro heights bound embedded artwork without changing its aspect ratio. */
+function availableHeight(element: HTMLElement, pageHeight: number): number {
+  let height = pageHeight;
+  let parent = element.parentElement;
+  let top: number | undefined;
+  while (parent) {
+    if (parent.classList.contains('docm-macro-height')) {
+      top ??= element.getBoundingClientRect().top;
+      const style = getComputedStyle(parent);
+      height = Math.min(height, parent.getBoundingClientRect().bottom - top
+        - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth));
+    }
+    parent = parent.parentElement;
+  }
+  return height;
+}
+
 /** Scale every baseline metric together; SVG height alone is not a baseline. */
 export function fittedMath(width: number, height: number, depth: number, maximumWidth: number, maximumHeight: number): { width: number; height: number; depth: number } {
   if (![width, height, maximumWidth, maximumHeight].every((value) => Number.isFinite(value) && value > 0) || !Number.isFinite(depth)) throw new Error('Invalid math layout metrics');
@@ -124,7 +141,7 @@ async function prepareDocument(model: PrintModel): Promise<void> {
       const horizontalInset = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
       const verticalInset = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
       const width = availableWidth(element) - horizontalInset;
-      const height = maximumBlockHeight - verticalInset - parseFloat(style.marginTop) - parseFloat(style.marginBottom);
+      const height = availableHeight(element, maximumBlockHeight - parseFloat(style.marginTop)) - verticalInset - parseFloat(style.marginBottom);
       if (width <= 0 || height <= 0) throw new Error('Image padding and spacing leave no printable area');
       const scale = Math.min(1, width / decoded.width, height / decoded.height);
       element.style.width = `${decoded.width * scale + horizontalInset}px`;
@@ -141,7 +158,7 @@ async function prepareDocument(model: PrintModel): Promise<void> {
     scopeSvgIds(svg, `docm-${diagram.id}`);
     const intrinsic = svgGeometry(svg);
     const style = getComputedStyle(element);
-    const maximumHeight = maximumBlockHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.marginTop) - parseFloat(style.marginBottom);
+    const maximumHeight = availableHeight(element, maximumBlockHeight - parseFloat(style.marginTop)) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.marginBottom);
     const maximumWidth = element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     if (maximumWidth <= 0 || maximumHeight <= 0) throw new RenderError('Mermaid padding and spacing leave no printable area', [], diagram.source);
     const requestedScale = config.width === undefined && config.height === undefined ? 1 : Math.min(
@@ -172,7 +189,7 @@ async function prepareDocument(model: PrintModel): Promise<void> {
       if (!expression.display && result.widthPx > maximumWidth) element.classList.add('docm-math-own-line');
       const onOwnLine = expression.display || element.classList.contains('docm-math-own-line');
       const style = getComputedStyle(element);
-      const maximumHeight = maximumBlockHeight - (onOwnLine ? parseFloat(style.marginTop) + parseFloat(style.marginBottom) : 0);
+      const maximumHeight = availableHeight(element, maximumBlockHeight - (onOwnLine ? parseFloat(style.marginTop) : 0)) - (onOwnLine ? parseFloat(style.marginBottom) : 0);
       const fit = fittedMath(result.widthPx, result.heightPx, result.depthPx, maximumWidth, maximumHeight);
       svg.setAttribute('width', String(fit.width)); svg.setAttribute('height', String(fit.height));
       svg.style.width = `${fit.width}px`; svg.style.height = `${fit.height}px`;
@@ -191,6 +208,20 @@ async function prepareDocument(model: PrintModel): Promise<void> {
   // Two animation frames make all DOM insertion/font/image measurements observable to printToPDF.
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   decorations.validate();
+  for (const block of root.querySelectorAll<HTMLElement>('.docm-macro-layout')) {
+    if (block.classList.contains('docm-macro-height') && block.scrollHeight > block.clientHeight + 1) {
+      throw new RenderError(`Macro <${block.dataset.docmMacro}> content exceeds its configured height; increase height or omit it`);
+    }
+    const style = getComputedStyle(block);
+    const height = block.getBoundingClientRect().height + parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+    // Page-tall floats cannot leave a usable prose column; let their contents paginate.
+    if (style.cssFloat !== 'none' && height > maximumBlockHeight) {
+      block.style.cssFloat = 'none';
+      block.classList.remove('docm-float-left', 'docm-float-right');
+    } else if (style.cssFloat !== 'none') {
+      block.classList.add('docm-keep-together');
+    }
+  }
   // Long code/tables/quotes remain splittable. Only measured single-page blocks get keep-together.
   for (const block of root.querySelectorAll<HTMLElement>('pre,table,blockquote,figure')) {
     const style = getComputedStyle(block);
