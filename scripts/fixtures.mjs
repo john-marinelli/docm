@@ -2,7 +2,7 @@ import {mkdir,writeFile,copyFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 export async function createFixtures(root){
  const home=join(root,'home'),cwd=join(root,'invocation A'),documents=join(root,'documents B');
- const globalDirectory=join(home,'Library','Application Support','docm');
+ const globalDirectory=process.platform==='linux'?join(home,'xdg-config','docm'):join(home,'Library','Application Support','docm');
  for(const directory of [cwd,documents,join(globalDirectory,'assets'),join(cwd,'assets')])await mkdir(directory,{recursive:true});
  const logo=join(globalDirectory,'assets','logo space.svg');
  await writeFile(logo,'<svg xmlns="http://www.w3.org/2000/svg" width="180" height="80" viewBox="0 0 180 80"><rect width="180" height="80" rx="12" fill="#204060"/><text x="90" y="54" text-anchor="middle" font-family="sans-serif" font-size="46" font-weight="700" fill="#ffffff">DM</text></svg>');

@@ -15,8 +15,16 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: macos-14
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: darwin-arm64
+          - runner: ubuntu-24.04
+            target: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -24,20 +32,51 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           electron: "true"
+      - name: Install Linux packaging and display tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm xvfb xauth
+          sudo apparmor_parser -r scripts/ci-apparmor.profile
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
       - name: Check types
-        run: mise run typecheck
+        run: pnpm run typecheck
       - name: Run behavior tests
-        run: mise run test
-      - name: Build fresh source without mise on PATH
+        run: pnpm run test
+      - name: Package
         env:
-          MISE_AUTO_INSTALL: "false"
-        run: mise run build:smoke
-      - name: Retain build evidence
+          # Ad-hoc signing needs no credentials; let it run on pull requests too.
+          CSC_FOR_PULL_REQUEST: "true"
+        run: pnpm run package
+      - name: Exercise the packaged app
+        if: runner.os == 'macOS'
+        run: pnpm run package:smoke
+      - name: Install the .deb and exercise it
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./dist/docm-*-linux-x64.deb
+          xvfb-run -a node scripts/smoke.mjs --executable /usr/bin/docm
+      - name: Install the .rpm on Fedora and openSUSE
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" fedora:latest \
+            sh -c 'dnf install -y /dist/docm-*-linux-x64.rpm && test -x "$(readlink -f /usr/bin/docm)"'
+          docker run --rm -v "$PWD/dist:/dist:ro" opensuse/tumbleweed:latest \
+            sh -c 'zypper --non-interactive install --allow-unsigned-rpm /dist/docm-*-linux-x64.rpm && test -x "$(readlink -f /usr/bin/docm)"'
+      - name: Install through Homebrew
+        run: ${{ runner.os == 'Linux' && 'xvfb-run -a' || '' }} scripts/brew-check.sh dist
+      - name: "Experimental: render without a display"
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          printf '# Headless\n' > "$RUNNER_TEMP/headless.md"
+          env -u DISPLAY -u WAYLAND_DISPLAY docm r "$RUNNER_TEMP/headless.md" -o "$RUNNER_TEMP/headless.pdf"
+          test "$(head -c 5 "$RUNNER_TEMP/headless.pdf")" = '%PDF-'
+      - name: Retain smoke evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .build/build-smoke/
-          include-hidden-files: true
+          name: ci-evidence-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/package-smoke/
           if-no-files-found: ignore
           retention-days: 14

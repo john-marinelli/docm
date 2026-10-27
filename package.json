@@ -4,6 +4,8 @@
   "description": "Markdown to PDF preview and rendering",
   "author": "John Marinelli",
   "license": "MIT",
+  "homepage": "https://github.com/john-marinelli/docm",
+  "desktopName": "docm.desktop",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
@@ -12,22 +14,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "notices:prepare": "node scripts/prepare-notices.mjs",
-    "package": "pnpm run build && pnpm run notices:prepare && electron-builder --mac --dir --arm64 --publish never --config.electronDist=node_modules/electron/dist",
+    "package": "pnpm run build && pnpm run notices:prepare && electron-builder --publish never --config.electronDist=node_modules/electron/dist",
     "smoke": "node scripts/smoke.mjs",
-    "build:smoke": "node scripts/build-smoke.mjs",
     "package:smoke": "node scripts/smoke.mjs --packaged",
     "bootstrap:electron": "pnpm exec install-electron",
-    "formula:build": "node scripts/build-formula.mjs",
-    "formula:prepare": "node scripts/prepare-formula.mjs && node scripts/homebrew.mjs prepare",
-    "formula:install": "node scripts/homebrew.mjs install",
-    "formula:refresh": "node scripts/prepare-formula.mjs && node scripts/homebrew.mjs refresh",
-    "formula:smoke": "node scripts/homebrew.mjs smoke",
-    "release:version": "node scripts/version.mjs bump",
-    "release:check": "node scripts/version.mjs check-tag",
-    "release:prepare": "node scripts/release.mjs prepare",
-    "release:smoke": "node scripts/release-smoke.mjs source",
-    "release:homebrew": "node scripts/release-smoke.mjs homebrew",
-    "release:github": "node scripts/release-github.mjs"
+    "formula": "node scripts/formula.mjs",
+    "release:version": "npm version --no-git-tag-version"
   },
   "build": {
     "appId": "local.docm",
@@ -35,9 +27,23 @@
     "asar": true,
     "npmRebuild": false,
     "beforePack": "scripts/before-pack.mjs",
+    "afterPack": "scripts/after-pack.mjs",
     "directories": {
       "output": "dist"
     },
+    "fileAssociations": [
+      {
+        "ext": [
+          "md",
+          "markdown",
+          "mdown",
+          "mkd"
+        ],
+        "name": "Markdown document",
+        "mimeType": "text/markdown",
+        "role": "Viewer"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json",
@@ -61,7 +67,76 @@
       "notarize": false,
       "timestamp": "none",
       "hardenedRuntime": false,
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "tar.gz",
+          "arch": "arm64"
+        }
+      ],
+      "artifactName": "docm-${version}-darwin-arm64.${ext}"
+    },
+    "linux": {
+      "executableName": "docm",
+      "executableArgs": [
+        "%f"
+      ],
+      "category": "Office",
+      "maintainer": "John Marinelli",
+      "target": [
+        {
+          "target": "tar.gz",
+          "arch": "x64"
+        },
+        {
+          "target": "deb",
+          "arch": "x64"
+        },
+        {
+          "target": "rpm",
+          "arch": "x64"
+        }
+      ],
+      "artifactName": "docm-${version}-linux-x64.${ext}"
+    },
+    "deb": {
+      "afterInstall": "packaging/linux/after-install.tpl",
+      "afterRemove": "packaging/linux/after-remove.tpl",
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnss3",
+        "libasound2 | libasound2t64",
+        "libgbm1",
+        "libdrm2",
+        "libatk-bridge2.0-0 | libatk-bridge2.0-0t64",
+        "libx11-xcb1",
+        "libxcomposite1",
+        "libxdamage1",
+        "libxfixes3",
+        "libxrandr2",
+        "xdg-utils"
+      ]
+    },
+    "rpm": {
+      "afterInstall": "packaging/linux/after-install.tpl",
+      "afterRemove": "packaging/linux/after-remove.tpl",
+      "fpm": [
+        "--rpm-rpmbuild-define=_build_id_links none"
+      ],
+      "depends": [
+        "libgtk-3.so.0()(64bit)",
+        "libnss3.so()(64bit)",
+        "libasound.so.2()(64bit)",
+        "libgbm.so.1()(64bit)",
+        "libdrm.so.2()(64bit)",
+        "libatk-bridge-2.0.so.0()(64bit)",
+        "libX11-xcb.so.1()(64bit)",
+        "libXcomposite.so.1()(64bit)",
+        "libXdamage.so.1()(64bit)",
+        "libXfixes.so.3()(64bit)",
+        "libXrandr.so.2()(64bit)",
+        "xdg-utils"
+      ]
     }
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { CommanderError } from 'commander';
+import { spawn } from 'node:child_process';
 import { Console } from 'node:console';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,7 +17,11 @@ import type { ExportResult, PreviewUpdate } from '../shared/types.js';
 console = new Console({ stdout: process.stderr, stderr: process.stderr });
 app.commandLine.appendSwitch('enable-logging', 'stderr');
 const invocationCwd = process.cwd();
-const globalThemePath = path.join(os.homedir(), 'Library', 'Application Support', 'docm', 'theme.toml');
+const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+const configDirectory = process.platform === 'linux'
+  ? xdgConfigHome && path.isAbsolute(xdgConfigHome) ? xdgConfigHome : path.join(os.homedir(), '.config')
+  : path.join(os.homedir(), 'Library', 'Application Support');
+const globalThemePath = path.join(configDirectory, 'docm', 'theme.toml');
 const nativeArguments = process.argv.slice(process.defaultApp ? 2 : 1);
 const markerIndex = nativeArguments.indexOf('--cli');
 const separatorIndex = nativeArguments.indexOf('--');
@@ -30,7 +35,22 @@ try {
   if (error instanceof CommanderError) parseExit = error.exitCode;
   else { console.error(error instanceof Error ? error.message : String(error)); parseExit = 2; }
 }
-if (request?.mode === 'render' || parseExit !== undefined) app.setActivationPolicy('prohibited');
+if (process.platform === 'darwin' && (request?.mode === 'render' || parseExit !== undefined)) app.setActivationPolicy('prohibited');
+// Printing uses a hidden window, which otherwise needs an X11/Wayland display.
+if (process.platform === 'linux' && request?.mode === 'render' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+  app.commandLine.appendSwitch('ozone-platform', 'headless');
+}
+
+// Finder delivers documents as events, not arguments. The first one received
+// before launch is decided becomes this instance's document; later ones each
+// get their own process, like separate terminal invocations.
+let launchDocument: string | undefined;
+let launchDecided = false;
+app.on('open-file', (event, file) => {
+  event.preventDefault();
+  if (!launchDecided && !request) { launchDocument ??= file; return; }
+  spawn(process.execPath, [file], { detached: true, stdio: 'ignore' }).unref();
+});
 
 let previewWindow: BrowserWindow | undefined;
 let previewSession: PreviewSession | undefined;
@@ -127,7 +147,7 @@ async function openPreview(sourcePath: string, cwd: string, configPath?: string)
     return exporting;
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { role: 'appMenu' },
+    process.platform === 'darwin' ? { role: 'appMenu' } : { label: 'File', submenu: [{ role: 'quit' }] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { role: 'windowMenu' },
   ]));
@@ -147,18 +167,24 @@ async function run(): Promise<void> {
   if (parseExit !== undefined) { await shutdown(parseExit); return; }
   await installProtocol();
   if (stopping) return;
+  launchDecided = true;
   if (!request) {
-    const selected = await dialog.showOpenDialog({ title: 'Open Markdown', properties: ['openFile'], filters: [{ name: 'Markdown documents', extensions: ['md', 'markdown', 'mdown', 'mkd'] }] });
-    if (stopping) return;
-    if (selected.canceled || !selected.filePaths[0]) { await shutdown(0); return; }
-    const sourcePath = selected.filePaths[0];
+    let sourcePath = launchDocument;
+    if (sourcePath === undefined) {
+      const selected = await dialog.showOpenDialog({ title: 'Open Markdown', properties: ['openFile'], filters: [{ name: 'Markdown documents', extensions: ['md', 'markdown', 'mdown', 'mkd'] }] });
+      if (stopping) return;
+      if (selected.canceled || !selected.filePaths[0]) { await shutdown(0); return; }
+      sourcePath = selected.filePaths[0];
+    }
     await openPreview(sourcePath, path.dirname(sourcePath));
     return;
   }
   const invocation = request;
   const sourcePath = path.resolve(invocationCwd, invocation.sourcePath);
   const configPath = invocation.configPath !== undefined ? path.resolve(invocationCwd, invocation.configPath) : undefined;
-  if (invocation.mode === 'preview') { await openPreview(sourcePath, invocationCwd, configPath); return; }
+  // A desktop launch (Linux .desktop `%f`) has no meaningful working directory:
+  // discover themes beside the document, as the Markdown picker does.
+  if (invocation.mode === 'preview') { await openPreview(sourcePath, attached ? invocationCwd : path.dirname(sourcePath), configPath); return; }
   const rendering = renderDocument(sourcePath, { cwd: invocationCwd, globalThemePath, ...(configPath !== undefined ? { configPath } : {}), signal: renderController.signal });
   renderWork = rendering;
   const rendered = await rendering;

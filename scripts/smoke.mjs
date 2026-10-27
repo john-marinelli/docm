@@ -10,16 +10,17 @@ import electron from 'electron';
 import {_electron as electronDriver} from '@playwright/test';
 import {getDocument,OPS} from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {createFixtures} from './fixtures.mjs';
+import {hostPlatform,launcherRelative,packageDirectory} from './platform.mjs';
 
 export async function runSmoke({executable=electron,packaged=false,artifactsPath}={}){
  const root=await mkdtemp(path.join(tmpdir(),'docm smoke ')), fixture=await createFixtures(root);
  const artifacts=path.resolve(artifactsPath??(packaged?'.build/package-smoke':'.build/smoke'));await mkdir(artifacts,{recursive:true});
- const cleanEnv={...process.env,HOME:fixture.home,PATH:packaged?'/usr/bin:/bin:/usr/sbin:/sbin':process.env.PATH};
+ const cleanEnv={...process.env,HOME:fixture.home,XDG_CONFIG_HOME:path.join(fixture.home,'xdg-config'),XDG_CACHE_HOME:path.join(fixture.home,'.cache'),XDG_DATA_HOME:path.join(fixture.home,'.local','share'),PATH:packaged?'/usr/bin:/bin:/usr/sbin:/sbin':process.env.PATH};
  delete cleanEnv.ELECTRON_RUN_AS_NODE;delete cleanEnv.ELECTRON_ENABLE_LOGGING;delete cleanEnv.ELECTRON_RENDERER_URL;
  const prefix=packaged?[]:[path.resolve('.'),'--cli'];
  const report={packaged,executable,resolvedExecutable:await realpath(executable),runtimePath:cleanEnv.PATH,scenarios:[],screenshots:[],timing:{},memory:[]};const apps=[];
- const run=async(args,{cwd=fixture.cwd,home=fixture.home,brokenPipe=false}={})=>{
-  const child=spawn(executable,[...prefix,...args],{cwd,env:{...cleanEnv,HOME:home},stdio:['ignore','pipe','pipe']});
+ const run=async(args,{cwd=fixture.cwd,home=fixture.home,configHome=path.join(home,'xdg-config'),brokenPipe=false}={})=>{
+  const child=spawn(executable,[...prefix,...args],{cwd,env:{...cleanEnv,HOME:home,XDG_CONFIG_HOME:configHome,XDG_CACHE_HOME:path.join(home,'.cache'),XDG_DATA_HOME:path.join(home,'.local','share')},stdio:['ignore','pipe','pipe']});
   const output=[];let stderr='';const timer=setTimeout(()=>child.kill('SIGKILL'),90_000);
   if(brokenPipe)child.stdout.destroy();else child.stdout.on('data',bytes=>output.push(bytes));child.stderr.on('data',bytes=>stderr+=bytes);
   const result=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',(code,signal)=>resolve({code,signal,stdout:Buffer.concat(output),stderr}));});clearTimeout(timer);return result;
@@ -91,6 +92,10 @@ export async function runSmoke({executable=electron,packaged=false,artifactsPath
   for(const source of [fixture.plain,fixture.source]){const output=path.join(root,path.basename(source)+'.global.pdf');await render(source,['-o',output],{cwd:isolated});const globalOnly=await inspect(await readFile(output));assert(globalOnly.pages.every(page=>page.text.includes('Engineering')));}
   const duplicateOutput=path.join(root,'duplicate.pdf');await render(fixture.plain,['--config',fixture.globalTheme,'-o',duplicateOutput]);const duplicate=await inspect(await readFile(duplicateOutput));assert(duplicate.pages[0].text.includes('Engineering'));
   report.scenarios.push('default-only, invocation A not document B, global-only on two documents, explicit duplicate automatic layer');
+  if(process.platform==='linux'){
+   const fallback=path.join(emptyHome,'.config','docm');await mkdir(fallback,{recursive:true});await writeFile(path.join(fallback,'theme.toml'),'[header]\nleft="XDG_FALLBACK"\n');
+   const output=path.join(artifacts,'xdg-fallback.pdf');await render(fixture.plain,['-o',output],{cwd:isolated,home:emptyHome,configHome:''});const fallbackPdf=await inspect(await readFile(output));assert(fallbackPdf.pages[0].text.includes('XDG_FALLBACK'));report.scenarios.push('custom absolute XDG_CONFIG_HOME and empty-XDG ~/.config fallback');
+  }
   const toggle=path.join(root,'toggle.md'),toggleOutput=path.join(root,'toggle.pdf');
   await writeFile(toggle,'+++\n[header]\nenabled=false\n[footer]\nenabled=false\n+++\n# Decorations disabled\n');await render(toggle,['-o',toggleOutput]);const disabled=await inspect(await readFile(toggleOutput));assert(!disabled.pages[0].text.includes('Engineering'));assert(!disabled.pages[0].text.includes('1 / 1'));
   await writeFile(toggle,'+++\n[header]\nleft="A fitting wrapped header with a deliberate\\nsecond line"\ncenter=""\nlogo=false\n+++\n# Wrapped header\n');await render(toggle,['-o',toggleOutput]);const wrapped=await inspect(await readFile(toggleOutput));assert(wrapped.pages[0].text.includes('second line'));
@@ -206,7 +211,7 @@ async function exercisePreview(context){
  // The CLI scenarios exercise the actual launcher. Its prepended --cli marker
  // intentionally keeps user arguments intact, so Playwright's debug switches
  // must instead precede --cli on the same packaged native executable.
- const previewExecutable=packaged?path.resolve(path.dirname(await realpath(executable)),'../../MacOS/docm'):executable;
+ const previewExecutable=packaged?path.resolve(path.dirname(await realpath(executable)),process.platform==='darwin'?'../../MacOS/docm':'../../docm'):executable;
  const previewPrefix=packaged?['--cli']:prefix;
  report.cliExecutable=executable;report.previewExecutable=previewExecutable;
  const launch=async(source,args=[])=>{const application=await electronDriver.launch({executablePath:previewExecutable,args:[...previewPrefix,source,...args],cwd:fixture.cwd,env:cleanEnv,timeout:30_000});apps.push(application);const page=await application.firstWindow();page.on('pageerror',error=>console.error('[preview]',error));return {application,page};};
@@ -295,9 +300,14 @@ async function exerciseExport(application,page,destination,source,markdown,inspe
   const bytes=await readFile(destination),latest=await page.evaluate(()=>window.__docmSmoke.latest);assert.deepEqual(bytes,Buffer.from(latest.bytes));assert((await inspect(bytes)).pages.some(page=>page.text.includes('EXPORT_LATEST')));
   await begin();await writeFile(source,'+++\n[body]\nunknown=true\n+++\n# Invalid export\n');await select({canceled:false,filePath:destination});assert.equal(await page.locator('#export-status').getAttribute('data-kind'),'error');assert.deepEqual(await readFile(destination),bytes);
   const revision=await page.evaluate(()=>window.__docmSmoke.latest.revision);await writeFile(source,markdown);await page.waitForFunction(revision=>window.__docmSmoke.latest?.revision>revision,revision,{timeout:60_000});await page.waitForFunction(()=>document.querySelector('#preview-status').dataset.kind==='ready',{},{timeout:60_000});
-  await page.keyboard.press('Meta+s');await application.evaluate(async()=>{while(!globalThis.docmSmokeSelect)await new Promise(resolve=>setTimeout(resolve,10));});await select({canceled:false,filePath:source});assert.equal(await page.locator('#export-status').getAttribute('data-kind'),'error');assert.equal(await readFile(source,'utf8'),markdown);
-  report.scenarios.push('Export button/Cmd-S real IPC: cancellation, latest edit while dialog is pending, exact published PDF bytes, failed latest revision preserves output, protected source refusal (dialog response controlled; native panel not automated)');
+  await page.keyboard.press(process.platform==='darwin'?'Meta+s':'Control+s');await application.evaluate(async()=>{while(!globalThis.docmSmokeSelect)await new Promise(resolve=>setTimeout(resolve,10));});await select({canceled:false,filePath:source});assert.equal(await page.locator('#export-status').getAttribute('data-kind'),'error');assert.equal(await readFile(source,'utf8'),markdown);
+  report.scenarios.push('Export button/save shortcut real IPC: cancellation, latest edit while dialog is pending, exact published PDF bytes, failed latest revision preserves output, protected source refusal (dialog response controlled; native panel not automated)');
  }finally{await application.evaluate(({dialog})=>{dialog.showSaveDialog=globalThis.docmSmokeDialog;delete globalThis.docmSmokeDialog;delete globalThis.docmSmokeSelect;});}
 }
 
-if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){await runSmoke(process.argv.includes('--packaged')?{executable:path.resolve('dist/mac-arm64/Docm.app/Contents/Resources/bin/docm'),packaged:true,artifactsPath:'.build/package-smoke'}:{});}
+// --packaged exercises dist's launcher; --executable PATH an installed one (e.g. /usr/bin/docm).
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
+ const platform=hostPlatform(),index=process.argv.indexOf('--executable');
+ const executable=index>0?path.resolve(process.argv[index+1]):process.argv.includes('--packaged')?path.resolve(packageDirectory(platform),launcherRelative(platform)):undefined;
+ await runSmoke(executable?{executable,packaged:true,artifactsPath:'.build/package-smoke'}:{});
+}

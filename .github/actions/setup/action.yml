@@ -17,8 +17,8 @@ runs:
     - name: Install frozen project dependencies
       if: inputs.dependencies == 'true'
       shell: bash
-      run: mise exec -- pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile
     - name: Bootstrap Electron runtime
       if: inputs.dependencies == 'true' && inputs.electron == 'true'
       shell: bash
-      run: mise run bootstrap:electron
+      run: pnpm run bootstrap:electron

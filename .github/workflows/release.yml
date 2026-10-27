@@ -10,17 +10,19 @@ permissions:
 concurrency:
   group: release-${{ github.repository }}
   cancel-in-progress: false
-  queue: max
-
-env:
-  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   build:
-    runs-on: macos-14
-    timeout-minutes: 40
-    outputs:
-      commit: ${{ steps.source.outputs.commit }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: macos-14
+            target: darwin-arm64
+          - runner: ubuntu-24.04
+            target: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -29,138 +31,75 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           electron: "true"
-      - name: Resolve the tagged source commit
-        id: source
-        shell: bash
-        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Validate release source and tag
-        env:
-          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check the tag matches package.json and is on main
         shell: bash
         run: |
-          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
-          git diff --exit-code
-          git diff --cached --exit-code
-          mise run release:check -- "$RELEASE_TAG"
-          mise run release:github -- preflight
+          test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Install Linux packaging and display tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm xvfb xauth
+          sudo apparmor_parser -r scripts/ci-apparmor.profile
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
       - name: Check types and behavior
-        run: mise run typecheck && mise run test
-      - name: Prepare versioned release assets and formula
-        env:
-          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
-        shell: bash
-        run: mise run release:prepare -- --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --repository "$GITHUB_REPOSITORY"
-      - name: Build and exercise the exact candidate assets
-        run: mise run release:smoke
-      - name: Install the local candidate through Homebrew before publication
-        run: mise run release:homebrew -- --local-assets
-      - name: Retain immutable release candidate
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        run: pnpm run typecheck && pnpm run test
+      - name: Package
+        run: pnpm run package
+      - name: Exercise the packaged app
+        if: runner.os == 'macOS'
+        run: pnpm run package:smoke
+      - name: Install the .deb and exercise it
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./dist/docm-*-linux-x64.deb
+          xvfb-run -a node scripts/smoke.mjs --executable /usr/bin/docm
+      - name: Install through Homebrew
+        run: ${{ runner.os == 'Linux' && 'xvfb-run -a' || '' }} scripts/brew-check.sh dist
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-candidate
-          path: .build/release/
-          include-hidden-files: true
+          name: release-${{ matrix.target }}
+          path: |
+            dist/docm-*.tar.gz
+            dist/docm-*.deb
+            dist/docm-*.rpm
           if-no-files-found: error
           compression-level: 0
-          retention-days: 30
-      - name: Retain source-build evidence
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: release-source-evidence-${{ github.run_attempt }}
-          path: .build/release-smoke/
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 30
-      - name: Retain candidate Homebrew evidence
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: release-candidate-homebrew-evidence-${{ github.run_attempt }}
-          path: .build/release-homebrew/
-          include-hidden-files: true
-          if-no-files-found: ignore
           retention-days: 30
 
   publish:
     needs: build
-    runs-on: macos-14
-    timeout-minutes: 20
-    permissions:
-      contents: write
-    env:
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          dependencies: "false"
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: release-candidate
-          path: .build/release
-      - name: Upload draft assets, then publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mise run release:github -- publish
-
-  verify-public:
-    needs: [build, publish]
-    runs-on: macos-14
-    timeout-minutes: 40
-    env:
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
-      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: release-candidate
-          path: .build/release
-      - name: Verify unauthenticated public downloads
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mise run release:github -- verify-public
-      - name: Install public candidate and exercise the installed CLI
-        run: mise run release:homebrew -- --directory .build/release-public
-      - name: Retain installation evidence
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: release-homebrew-evidence-${{ github.run_attempt }}
-          path: .build/release-homebrew/
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 30
-
-  formula-pr:
-    needs: [build, verify-public]
-    runs-on: macos-14
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
-      actions: write
-    env:
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
       - uses: ./.github/actions/setup
         with:
           dependencies: "false"
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-candidate
-          path: .build/release
-      - name: Propose the formula update and dispatch its CI
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Publish the GitHub release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mise run release:github -- pull-request
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum docm-* > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "docm ${GITHUB_REF_NAME#v}" --generate-notes
+      - name: Propose the formula update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/formula.mjs dist --release "$GITHUB_REPOSITORY" > Formula/docm.rb
+          branch="homebrew/$GITHUB_REF_NAME"
+          git switch -c "$branch"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -am "chore(homebrew): docm ${GITHUB_REF_NAME#v}"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title "Homebrew: docm ${GITHUB_REF_NAME#v}" \
+            --body "Points the formula at the [$GITHUB_REF_NAME release](https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME). The release workflow installed these archives through Homebrew on macOS arm64 and Linux x64 before publishing."
