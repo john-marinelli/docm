@@ -305,4 +305,9 @@ async function exerciseExport(application,page,destination,source,markdown,inspe
  }finally{await application.evaluate(({dialog})=>{dialog.showSaveDialog=globalThis.docmSmokeDialog;delete globalThis.docmSmokeDialog;delete globalThis.docmSmokeSelect;});}
 }
 
-if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){const platform=hostPlatform();await runSmoke(process.argv.includes('--packaged')?{executable:path.resolve(packageDirectory(platform),launcherRelative(platform)),packaged:true,artifactsPath:'.build/package-smoke'}:{});}
+// --packaged exercises dist's launcher; --executable PATH an installed one (e.g. /usr/bin/docm).
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
+ const platform=hostPlatform(),index=process.argv.indexOf('--executable');
+ const executable=index>0?path.resolve(process.argv[index+1]):process.argv.includes('--packaged')?path.resolve(packageDirectory(platform),launcherRelative(platform)):undefined;
+ await runSmoke(executable?{executable,packaged:true,artifactsPath:'.build/package-smoke'}:{});
+}

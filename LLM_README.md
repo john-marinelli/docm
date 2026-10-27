@@ -14,7 +14,7 @@ flowchart TD
     E --> G[File or stdout]
 ```
 
-[`src/main/index.ts`](src/main/index.ts) coordinates preview, one-shot rendering, native dialogs, and shutdown. `docm notes.md` owns a terminal-attached window; separate invocations are independent. `docm r notes.md [-o report.pdf]` renders once without opening a preview. `-o -` reserves stdout for PDF bytes; diagnostics go to stderr. Finder or Linux desktop launch opens a Markdown picker and uses the selected document's directory for theme discovery.
+[`src/main/index.ts`](src/main/index.ts) coordinates preview, one-shot rendering, native dialogs, and shutdown. `docm notes.md` owns a terminal-attached window; separate invocations are independent. `docm r notes.md [-o report.pdf]` renders once without opening a preview. `-o -` reserves stdout for PDF bytes; diagnostics go to stderr. A desktop launch (Finder, "Open With", or the Linux `.desktop` entry) previews the opened document, or shows a Markdown picker when there is none, and discovers themes in that document's directory. macOS delivers Finder documents as `open-file` events: the first one before launch becomes the instance's document and later ones start separate processes, like separate terminal invocations. The Linux entry uses `%f`, so each selected file gets its own instance.
 
 The shell [launcher](bin/docm) resolves its symlinks and `exec`s the bundled app, preserving the invocation directory, arguments, signals, and exit status without needing developer Node on PATH. Commander handles CLI parsing. Exit codes are 0 for success, 1 for rendering/configuration/I/O failure, 2 for invalid arguments, and 130 for Ctrl-C.
 
@@ -135,128 +135,95 @@ The main process owns filesystem access, dialogs, and writes. Both renderers dis
 
 The [`docm:` protocol](src/main/protocol.ts) serves allowlisted bundled resources, applies resource policies, denies permissions, and blocks navigation, popups, and webviews. Print documents block network connections; approved external links open through the system, not inside the app. Bundled fonts/viewer resources and embedded assets allow offline rendering. Shutdown aborts work, closes print windows, stops watchers, and releases resources.
 
-## Build, distribution, and verification
 
-TypeScript builds through electron-vite: ESM main process, CommonJS preloads, separate preview/print bundles. electron-builder assembles the native app, bundled runtime, assets, and third-party notices. [`mise.toml`](mise.toml) remains the single authority for exact Node/pnpm versions and exposes every project task. Mise is a developer entry point, not a build dependency: preparation and source builds read its quoted `[tools]` version entries directly without executing mise or requiring its configuration/data directories.
+## Build and packaging
 
-With the pinned Node/pnpm versions available, `mise run build` compiles the application; `mise run package` assembles `dist/mac-arm64/Docm.app` on macOS, and `mise run package:linux` assembles `dist/linux-unpacked` on Linux x64. Both packaging scripts compile and prepare notices first. Native frozen-source builds additionally check types, install locked dependencies offline, and stage the supplied Electron runtime; they invoke only Node/pnpm and host system tools, never mise. Tool discovery validates the running Node and an actual installed pnpm executable on PATH; it does not install tools or depend on manager shims. Cross-compilation is not supported.
+TypeScript builds through electron-vite: ESM main process, CommonJS preloads, separate preview/print bundles. electron-builder assembles the native app with the bundled runtime, assets, the [launcher](bin/docm), and third-party notices. [`mise.toml`](mise.toml) pins exact Node and pnpm versions; every task is a `pnpm run` script. Cross-compilation is not supported: each platform packages on its own host.
 
-Electron 44 has no package `postinstall` hook: `pnpm install` installs its JavaScript package but does not download `electron/dist`. After a fresh dependency installation, run `mise run bootstrap:electron` (or `pnpm run bootstrap:electron`) before development, packaging, or release preparation. The composite CI setup opts into this explicit runtime bootstrap through `electron: "true"` in CI and release-build jobs; publication, public-install verification, and formula-PR jobs do not bootstrap an unnecessary checkout runtime.
+Electron 44 has no package `postinstall` hook, so after a fresh `pnpm install` run `pnpm run bootstrap:electron` before development or packaging.
 
-| Tasks | Purpose |
+| Command | Purpose |
 |---|---|
-| `mise run dev` | Development application |
-| `mise run build`, `mise run typecheck`, `mise run test` | Compile, check types, run Vitest |
-| `mise run smoke` | Build and exercise the Electron CLI/preview |
-| `mise run build:smoke` | Build fresh source without mise on PATH, then exercise the packaged CLI |
-| `mise run package` / `mise run package:linux`, then `mise run package:smoke` | Assemble and exercise the native package |
-| `mise run formula:prepare`, `mise run formula:install` | Prepare private Homebrew inputs, source-build/install |
-| `mise run formula:refresh`, `mise run formula:smoke` | Rebuild after changes, exercise installed app |
+| `pnpm run dev` | Development application |
+| `pnpm run build`, `pnpm run typecheck`, `pnpm run test` | Compile, check types, run Vitest |
+| `pnpm run smoke` | Build and exercise the development Electron CLI/preview |
+| `pnpm run package` | Build the host's distributables into `dist/` |
+| `pnpm run package:smoke` | Exercise the unpacked package in `dist/` |
+| `node scripts/smoke.mjs --executable PATH` | Exercise an installed launcher, such as `/usr/bin/docm` |
+| `pnpm run formula -- DIR [--release OWNER/REPO]` | Print the Homebrew formula for the archives in `DIR` |
+| `pnpm run release:version -- patch` | Bump `package.json` (`patch`, `minor` or `major`) without committing or tagging |
 
-The private `docm/local` formula builds TypeScript in a clean staged tree from checksummed source, a frozen offline pnpm store, and an existing Electron archive—not checkout outputs or an old app. It stages official Node and pnpm build resources at the exact versions selected by `mise.toml`, then runs `pnpm run formula:build`; no preinstalled mise or personal tool directory is required. Preparation obtains Node's archive checksum from its release checksum list and validates the pnpm registry archive's SHA-512 integrity before recording its SHA-256. Homebrew fetches the resources before the network-denied build. **Electron/Chromium remains prebuilt upstream; “source-built” applies to docm.** Installation uses Cellar `libexec` plus a CLI symlink, not `/Applications`. Source/store/Electron `file://` inputs still make this checkout-specific, not a public Homebrew release.
+`pnpm run package` produces:
 
-[Distribution scripts](scripts/homebrew.mjs) verify ownership/provenance before replacing installations and refuse unrelated or modified products. Local maintenance commands do not install/upgrade global tooling; preparation needs the exact Node/pnpm versions already available. Existing installations change only through explicit refresh, not ordinary preparation. macOS signing is ad-hoc, without Developer ID or notarization; Gatekeeper, quarantine, and sandbox protections are not bypassed.
+| Host | Files | Use |
+|---|---|---|
+| macOS arm64 | `docm-VERSION-darwin-arm64.tar.gz` (`Docm.app`) | Homebrew |
+| Linux x64 | `docm-VERSION-linux-x64.tar.gz` | Homebrew, manual installs, AUR-style repackaging |
+| Linux x64 | `docm-VERSION-linux-x64.deb` | Debian, Ubuntu and derivatives |
+| Linux x64 | `docm-VERSION-linux-x64.rpm` | Fedora, RHEL, openSUSE |
 
-The pinned pnpm resource is the official `@pnpm/exe.darwin-arm64` or `@pnpm/exe.linux-x64` archive, whose executable is `pnpm` at the package root. It is not the generic `pnpm` wrapper archive and does not contain the older `bin/pnpm.cjs` entrypoint. The formula puts that native executable's directory on PATH without running package installation hooks. Stores and Electron receipts are bound to the native OS/architecture; wrong-target resources fail before packaging. Linux runtime validation inspects x64 ELF headers without executing staged binaries.
+Building the `.rpm` needs `rpmbuild` on the host (`apt-get install rpm`).
 
-[`scripts/smoke.mjs`](scripts/smoke.mjs) exercises PDF contents, themes/assets, watch recovery, reading controls, export consistency, Ctrl-C, and repeated 200-page updates. Screenshots/reports go under `.build/smoke`, `.build/package-smoke`, or `.build/formula-smoke`. Export smoke controls the native dialog response while exercising real IPC, freshness checks, and writes; native Save-panel interaction remains unautomated. Installed desktop behavior uses `formula:smoke`, not a disabled Homebrew test sandbox.
+**macOS signing** is ad-hoc (`mac.identity = "-"`), without a Developer ID or notarization. Homebrew does not quarantine formula downloads, so the installed app launches without Gatekeeper prompts. [`scripts/after-pack.mjs`](scripts/after-pack.mjs) rewrites Electron's `@loader_path` dylib IDs to `@rpath` before electron-builder signs. Together with the formula's `preserve_rpath`, this stops Homebrew from rewriting install names, which would break the bundle signature. electron-builder skips signing on pull-request builds unless `CSC_FOR_PULL_REQUEST=true`, which CI sets because ad-hoc signing uses no credentials.
 
-[`scripts/build-smoke.mjs`](scripts/build-smoke.mjs) stages a fresh source tree and frozen dependencies, reuses the pinned Node, and downloads/stages the exact checksummed pnpm resource used by the formula. It verifies the resource's package identity and executable version, then uses that executable for the complete source build with mise absent from PATH and a fresh HOME. It checks the macOS app signature where applicable and verifies version/PDF text through the packaged CLI with no developer tools on its runtime PATH. Evidence is written under `.build/build-smoke`; staged pnpm is temporary, and no global tooling or installed Homebrew package is changed.
+**Linux packages** install to `/opt/Docm`. Their [install scripts](packaging/linux) are electron-builder's defaults with one change: `/usr/bin/docm` (via `update-alternatives`) is the CLI launcher, not the bare Electron executable. The scripts also install electron-builder's AppArmor profile for `/opt/Docm/docm` where AppArmor supports it (Ubuntu 24.04+), and fall back to a setuid `chrome-sandbox` only where user namespaces are unavailable. The sandbox is never disabled. Dependencies are declared per format:
 
-Frozen-source packaging removes inherited `CSC_*`/`APPLE_*` variables, disables signing-identity discovery, and explicitly forces ad-hoc signing (`mac.identity=-`) with notarization off. Only that packaging subprocess sets `CSC_FOR_PULL_REQUEST=true`; no workflow-wide override or Apple signing credentials are needed. This allows the modified Electron bundle to be re-signed on PR builds. The smoke supplies `GITHUB_BASE_REF` when absent so local/main runs exercise the same PR signing guard and strict signature check. electron-builder still emits its generic PR-signing security warning.
+- **`.deb`:** Debian package names, with `t64` alternatives for Ubuntu 24.04's renamed libraries.
+- **`.rpm`:** shared-library capabilities such as `libgtk-3.so.0()(64bit)` rather than package names, so the same file resolves on Fedora and openSUSE, whose names differ. It disables `/usr/lib/.build-id` links, which otherwise conflict between Electron apps.
 
-## Releases and public Homebrew distribution
+The `.desktop` entry associates `text/markdown` and launches `/opt/Docm/docm %f`.
 
-Everything lives in `john-marinelli/docm`: source, Actions workflows, GitHub Release assets, and the public tap's `Formula/docm.rb`. The application version comes from `package.json`; `scripts/version.mjs` supplies explicit stable SemVer bumps and tag checks, and the CLI bundles that same version. Tool versions still come from `mise.toml`. Version commands never commit, tag, or push automatically.
+**Rendering needs a display.** Both preview and one-shot rendering use Chromium windows; printing uses a hidden one. On Linux, `docm r` without `DISPLAY` or `WAYLAND_DISPLAY` switches Chromium to its headless Ozone platform. This is **experimental** (CI reports it without failing). If it fails, use `xvfb-run -a docm r notes.md -o notes.pdf`.
 
-### Workflows
+## Distribution
 
-- [CI](.github/workflows/ci.yml) runs typecheck, behavior tests, and a clean-source build/packaged-CLI smoke on macOS ARM64 and Ubuntu 24.04 x64. Linux additionally installs the native candidate through Linuxbrew and exercises its CLI, PDF rendering, preview, live updates, and export controls under Xvfb. It also supports manual dispatch for the release bot's formula PR. Setup uses pinned Actions and mise; the actual source build excludes mise.
-- [Release](.github/workflows/release.yml) runs only for a pushed `vX.Y.Z` tag. Both native jobs check tag/package identity, require source history from `main` and an unchanged tracked checkout, prepare native assets, and install/exercise their candidate through Homebrew before publication. A merge job verifies matching source identity/tool versions, combines the two candidates, and renders one conditional formula. Repository-wide release concurrency is serialized with pending runs queued rather than replaced.
-- Publication requires both native targets and uploads all verified files into a draft before making it public. Fresh runners on both platforms verify unauthenticated downloads, source-install the public formula under normal Homebrew policy, exercise the installed CLI and preview, and uninstall it. Both public installations must pass before a PR updates `Formula/docm.rb`; the workflow never pushes that update directly to `main` or merges it.
+| Platform | Install |
+|---|---|
+| macOS arm64 | `brew tap john-marinelli/docm https://github.com/john-marinelli/docm.git` then `brew install --formula john-marinelli/docm/docm` |
+| Linux x64, any glibc distro | The same Homebrew commands, plus the host libraries and AppArmor note below |
+| Debian / Ubuntu | `sudo apt install ./docm-VERSION-linux-x64.deb` |
+| Fedora / RHEL | `sudo dnf install ./docm-VERSION-linux-x64.rpm` |
+| openSUSE | `sudo zypper install --allow-unsigned-rpm ./docm-VERSION-linux-x64.rpm` |
 
-Each target has `docm-VERSION-source-OS-ARCH.tar.gz`, `docm-VERSION-pnpm-store-OS-ARCH.tar.gz`, and `docm-VERSION-electron-OS-ARCH.tar.gz`, where OS-ARCH is `darwin-arm64` or `linux-x64`. Shared metadata is `release-manifest.json`, `docm.rb`, and `SHA256SUMS`. The schema-2 manifest records source commit, version, tools, and per-target resource hashes without checkout/cache paths. `mise run release:merge -- --output DIR MAC_CANDIDATE LINUX_CANDIDATE` verifies and combines exactly two native candidates without overwriting an existing output. The generated formula selects native sources/tools/resources with `on_macos`/`on_linux`. No prebuilt docm app ZIP, Homebrew bottle, Apple signing credentials, or cask is part of this workflow.
+The [formula](scripts/formula.mjs) installs the prebuilt archive for the host (`on_macos` / `on_linux`). It builds nothing and needs no Node, pnpm or mise. On macOS it links `Docm.app/Contents/Resources/bin/docm`. On Linux it links `libexec/resources/bin/docm` and writes `share/applications/docm.desktop`. If the desktop does not search Linuxbrew's share directory, add `$(brew --prefix)/share` to `XDG_DATA_DIRS`.
 
-### One-time repository setup
-
-Commit/review/push this implementation to `main` before creating a release tag. Enable Actions and **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests**. The jobs request only their required contents/PR/dispatch permissions and use the automatic `GITHUB_TOKEN`, not a personal token. Organization policies may require an administrator to permit these operations. GitHub can ask for approval of bot-created PR workflows; the publisher also explicitly dispatches CI for the formula branch.
-
-The repository and release downloads must be public for unauthenticated Homebrew installs. Keep branch protections/reviews in place, and restrict who may create or move release tags. The first formula file is created by the first successful release PR, not a placeholder pointing to nonexistent assets.
-
-### First release example: 0.1.0
-
-For an initial release whose package version is `0.1.0`, tag the tested commit on `main` without bumping it again. This is an example, not a tag to reuse after it already exists:
-
-```sh
-git switch main
-git pull --ff-only
-mise run release:check -- v0.1.0
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Watch the **Release** workflow in GitHub Actions. When all release jobs pass, review and merge the generated **Homebrew: docm 0.1.0** PR. That merge makes the formula available from this repository's default branch.
-
-### Subsequent releases
-
-Choose `patch`, `minor`, or `major`. For example, after `0.1.0`:
-
-```sh
-git switch main
-git pull --ff-only
-mise run release:version -- patch
-git add package.json
-git commit -m "chore: release 0.1.1"
-git push origin main
-```
-
-After CI passes, tag the exact version printed by the bump command:
-
-```sh
-mise run release:check -- v0.1.1
-git tag v0.1.1
-git push origin v0.1.1
-```
-
-Patch increments the last component; minor increments the middle and resets patch; major increments the first and resets both lower components. Tags must exactly match `package.json`; prereleases and build-metadata versions are not accepted. Repeat the workflow review and formula-PR merge for each release.
-
-### Installation, evidence, and failures
-
-After the formula PR is merged:
-
-```sh
-brew tap john-marinelli/docm https://github.com/john-marinelli/docm.git
-brew install --formula john-marinelli/docm/docm
-```
-
-The public formula does not require preinstalled mise, Node, or pnpm. Existing private/local docm installations are not silently replaced; the disposable CI installation check refuses a preexisting docm installation.
-
-`release:prepare` creates a native candidate in `.build/release` (or an explicit fresh `--output` directory); `release:smoke -- --directory DIR` selects the host's target, rebuilds, and exercises those exact files with the actual pnpm resource. `release:homebrew` is restricted to disposable Actions runners because it installs/uninstalls a real formula. Its `--local-assets` mode tests candidate archives before publication; the default mode tests public download URLs afterward. Both modes verify native source selection, a source-build receipt, installed CLI/PDF behavior, and the real preview surface. Evidence lives in `.build/release-smoke` and `.build/release-homebrew` and is retained as workflow artifacts. Export coverage controls the dialog response; native Save-panel interaction remains unautomated.
-
-### Linuxbrew requirements and rollout
-
-The Linux baseline is Ubuntu 24.04 LTS x86_64 with glibc 2.39 or newer and the system Electron desktop libraries. Linux ARM64 and musl/Alpine are not supported. Install Linuxbrew separately, then use the same public `brew tap`/`brew install` commands above **after the first dual-platform release's formula PR is merged**. The checked-in 0.1.2 formula intentionally remains tied to its existing macOS-only published assets; this implementation does not invent Linux URLs/checksums or mutate an already published release.
-
-On Ubuntu 24.04, the host prerequisites are:
+Linux targets x86_64 glibc distributions; ARM64 and musl (Alpine) are unsupported. CI verifies Ubuntu 24.04 (`.deb`, Homebrew) and that the `.rpm` installs on current Fedora and openSUSE Tumbleweed. Older glibc releases are untested. Homebrew users install the Electron libraries from their distribution. On Ubuntu 24.04:
 
 ```sh
 sudo apt-get install libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libdrm2 libatk-bridge2.0-0t64 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 xdg-utils
 ```
 
-Linuxbrew installs the packaged runtime beneath `libexec/docm-linux`, links `bin/docm`, and installs `share/applications/docm.desktop`. If the desktop does not include Linuxbrew's share directory, include `$(brew --prefix)/share` in `XDG_DATA_DIRS` for desktop-entry discovery. The desktop entry uses the stable `opt` path and launches without `--cli`; the terminal launcher adds `--cli` and preserves arguments, cwd, signals, and exit status.
-
-Both preview and one-shot PDF rendering require a graphical session because printing uses a hidden Chromium window. For a headless Linux host, provide Xvfb/xauth and run `xvfb-run -a docm r notes.md -o notes.pdf`. CI uses `mise run ci:display -- mise run TASK` for this. The host must permit unprivileged user namespaces for Chromium's sandbox. Ubuntu 24.04+ may require an administrator-provided AppArmor policy allowing the installed executable; do not disable AppArmor globally, run as root, or use `--no-sandbox`. Disposable CI loads [`scripts/ci-apparmor.profile`](scripts/ci-apparmor.profile), which grants user-namespace creation only to matching docm/Electron processes and leaves the host-wide restriction enabled; its wildcard paths are for disposable runners, not workstation installation.
-
-For a standard Linuxbrew prefix, an administrator can scope the workstation policy to the installed application's versioned Cellar path (adjust the path for a custom prefix):
+Ubuntu 24.04+ restricts unprivileged user namespaces, which Chromium's sandbox needs. The `.deb` installs a profile automatically; a Linuxbrew installation needs one from an administrator. For the standard prefix (adjust for a custom one), save this as `/etc/apparmor.d/docm-homebrew` and load it with `sudo apparmor_parser -r /etc/apparmor.d/docm-homebrew`:
 
 ```text
 abi <abi/4.0>,
 include <tunables/global>
-profile docm /home/linuxbrew/.linuxbrew/Cellar/docm/*/libexec/docm-linux/docm flags=(unconfined) {
+profile docm-homebrew /home/linuxbrew/.linuxbrew/Cellar/docm/*/libexec/docm flags=(unconfined) {
   userns,
 }
 ```
 
-Save it as `/etc/apparmor.d/docm` and load it with `sudo apparmor_parser -r /etc/apparmor.d/docm`. Chromium still creates its own sandbox; the profile permits the user namespace needed to do so. This administrative setup is separate from the unprivileged `brew install`.
+Do not disable AppArmor globally, run as root, or use `--no-sandbox`. CI loads the equivalent [`scripts/ci-apparmor.profile`](scripts/ci-apparmor.profile).
 
-Published releases/assets are never overwritten. A failed upload leaves a draft to inspect; remove only that failed draft before rerunning its failed publication job. If a publication response could not be confirmed, inspect the release's actual state first and never delete a published release. **Re-run failed jobs** is appropriate for infrastructure or permission failures when the tagged code and candidate assets are already correct. If the published formula or assets themselves are wrong, commit the fix and cut a new patch release; reruns retain the original tagged code and frozen assets. The tap stays on its previous merged formula while verification fails. A preexisting formula branch is reused only when it contains the verified formula and no unrelated changed files; it is never force-pushed. Workflow candidate artifacts are retained for 30 days.
+## Continuous integration and releases
+
+Everything lives in `john-marinelli/docm`: source, workflows, GitHub Release assets, and the tap's `Formula/docm.rb`.
+
+- [CI](.github/workflows/ci.yml) runs on macOS ARM64 and Ubuntu 24.04 x64. On both it type-checks, tests, packages, and installs the archive through a throwaway Homebrew tap ([`scripts/brew-check.sh`](scripts/brew-check.sh)), then checks the installed CLI. On macOS the check also confirms Homebrew left the signature intact. The full smoke runs against `dist/` on macOS and against the installed `.deb` on Linux, where CI also installs the `.rpm` in Fedora and openSUSE containers. Linux uses Xvfb.
+- [Release](.github/workflows/release.yml) runs for a pushed `vX.Y.Z` tag. The tag must equal `v` + `package.json`'s version and be on `main`. Each platform repeats the CI checks on the tagged commit. A publish job then uploads every archive and package, with `SHA256SUMS`, to a new GitHub release. It renders the formula with release URLs and opens a **Homebrew: docm X.Y.Z** PR. The tap changes only when that PR is merged. Re-running publish for an existing release fails rather than overwriting it.
+
+One-time setup: the repository and its releases must be public, and **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests** must be enabled. PRs opened with `GITHUB_TOKEN` do not trigger CI on their own; the formula PR is checked by the release run that produced it.
+
+To release:
+
+```sh
+git switch main && git pull --ff-only
+pnpm run release:version -- patch      # or minor / major
+git commit -am "chore: release $(node -p 'require("./package.json").version')"
+git push origin main
+# after CI passes:
+git tag "v$(node -p 'require("./package.json").version')"
+git push origin "v$(node -p 'require("./package.json").version')"
+```
+
+When the workflow finishes, review and merge the formula PR. If published assets are wrong, fix the code and cut a new patch release; published releases are never replaced.
