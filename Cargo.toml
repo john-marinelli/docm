@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/docm"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+# Typst, its WASM plugin runtime (mitex, Graphviz) and image codecs are slow
+# unoptimized; optimize dependencies even in development and test builds.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+strip = true

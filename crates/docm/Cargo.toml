@@ -1,0 +1,26 @@
+[package]
+name = "docm"
+description = "Render Markdown to PDF through Typst, with a native live preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+comrak = { version = "0.59", default-features = false }
+include_dir = "0.7"
+notify = "8"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+toml = "1"
+typst = "0.15.1"
+typst-layout = "0.15.1"
+typst-assets = { version = "0.15.1", features = ["fonts"] }
+typst-pdf = "0.15.1"
+typst-render = "0.15.1"
+time = { version = "0.3", features = ["local-offset"] }
+
+[dev-dependencies]
+tempfile = "3"

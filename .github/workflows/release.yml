@@ -28,35 +28,30 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          electron: "true"
-      - name: Check the tag matches package.json and is on main
-        shell: bash
-        run: |
-          test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - name: Install Linux packaging and display tools
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - name: Install Linux build and packaging tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rpm xvfb xauth
-          sudo apparmor_parser -r scripts/ci-apparmor.profile
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev rpm
           echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
-      - name: Check types and behavior
-        run: pnpm run typecheck && pnpm run test
-      - name: Package
-        run: pnpm run package
-      - name: Exercise the packaged app
-        if: runner.os == 'macOS'
-        run: pnpm run package:smoke
-      - name: Install the .deb and exercise it
-        if: runner.os == 'Linux'
+      - name: Check the tag matches Cargo.toml and is on main
         run: |
-          sudo apt-get install -y ./dist/docm-*-linux-x64.deb
-          xvfb-run -a node scripts/smoke.mjs --executable /usr/bin/docm
+          test "$GITHUB_REF_NAME" = "v$(scripts/version.sh)"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Test
+        run: cargo test --locked
+      - name: Package
+        run: scripts/package.sh
+      - name: Install the .deb and render without a display
+        if: runner.os == 'Linux'
+        run: scripts/package-check.sh deb dist
+      - name: Install the .rpm on Fedora and openSUSE
+        if: runner.os == 'Linux'
+        run: scripts/package-check.sh rpm dist
       - name: Install through Homebrew
-        run: ${{ runner.os == 'Linux' && 'xvfb-run -a' || '' }} scripts/brew-check.sh dist
+        run: scripts/brew-check.sh dist
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-${{ matrix.target }}
@@ -77,9 +72,8 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: ./.github/actions/setup
-        with:
-          dependencies: "false"
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: release-*
@@ -95,7 +89,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/formula.mjs dist --release "$GITHUB_REPOSITORY" > Formula/docm.rb
+          python3 -I scripts/formula.py dist --release "$GITHUB_REPOSITORY" > Formula/docm.rb
           branch="homebrew/$GITHUB_REF_NAME"
           git switch -c "$branch"
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
