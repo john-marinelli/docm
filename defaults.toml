@@ -1,4 +1,5 @@
-# Built-in defaults from src/config/defaults.ts.
+# Built-in defaults. docm loads this file as the lowest configuration layer;
+# copy it to theme.toml (or pass it with --config) as a starting point.
 
 [page]
 size = "A4"
@@ -108,6 +109,7 @@ indent = "18pt"
 
 [table]
 font_size = "10pt"
+space_after = "8pt"
 padding = "5pt"
 border_width = "0.5pt"
 border_color = "#D1D5DB"
@@ -116,6 +118,7 @@ stripe_background = "transparent"
 
 [blockquote]
 border_width = "3pt"
+space_after = "8pt"
 padding = "8pt"
 background = "#F8FAFC"
 
@@ -127,11 +130,12 @@ background = "#F3F4F6"
 [code]
 font = "mono"
 font_size = "9pt"
+space_after = "8pt"
 line_height = 1.4
 padding = "8pt"
 background = "#F3F4F6"
-theme = "github-light"
-wrap = true
+# "default" (Typst's highlighting), "none", or a path to a .tmTheme file.
+theme = "default"
 line_numbers = false
 
 [math]
@@ -142,11 +146,60 @@ space_after = "8pt"
 
 [math.macros]
 
-[mermaid]
+[diagram]
 font_size = "11pt"
 space_before = "8pt"
 space_after = "8pt"
-theme = "neutral"
+text_align = "center"
+
+# Diagram fences: ```NAME blocks import these packages and wrap their body.
+# {{body}} inserts the fence contents as Typst code; {{body_string}} inserts
+# them as a Typst string. Only bundled packages can be imported.
+
+[diagram.packages.fletcher]
+imports = ["@preview/fletcher:0.5.8"]
+wrap = """
+import fletcher: node, edge, shapes
+fletcher.diagram(
+{{body}}
+)"""
+
+[diagram.packages.chronos]
+imports = ["@preview/chronos:0.3.0"]
+wrap = """
+chronos.diagram({
+import chronos: *
+{{body}}
+})"""
+
+[diagram.packages.timeliney]
+imports = ["@preview/timeliney:0.4.0"]
+wrap = """
+timeliney.timeline(show-grid: true, {
+import timeliney: *
+{{body}}
+})"""
+
+[diagram.packages.cetz]
+imports = ["@preview/cetz:0.5.3"]
+wrap = """
+cetz.canvas({
+import cetz.draw: *
+{{body}}
+})"""
+
+[diagram.packages.cetz-plot]
+imports = ["@preview/cetz:0.5.2", "@preview/cetz-plot:0.1.4"]
+wrap = """
+cetz.canvas({
+import cetz.draw: *
+import cetz-plot: plot, chart
+{{body}}
+})"""
+
+[diagram.packages.diagraph]
+imports = ["@preview/diagraph:0.3.8"]
+wrap = "diagraph.render({{body_string}})"
 
 [image]
 space_before = "8pt"

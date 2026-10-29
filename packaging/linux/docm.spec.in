@@ -1,0 +1,38 @@
+# Filled in by scripts/package.sh, which stages the files under @STAGE@.
+%define _build_id_links none
+%define debug_package %{nil}
+%define __strip /bin/true
+
+Name:           docm
+Version:        @VERSION@
+Release:        1
+Summary:        @SUMMARY@
+License:        MIT
+URL:            https://github.com/john-marinelli/docm
+# The preview loads these at runtime; headless `docm r` needs none of them.
+Recommends:     libEGL.so.1()(64bit)
+Recommends:     libGL.so.1()(64bit)
+Recommends:     libwayland-client.so.0()(64bit)
+Recommends:     libwayland-egl.so.1()(64bit)
+Recommends:     libxkbcommon.so.0()(64bit)
+Recommends:     libxkbcommon-x11.so.0()(64bit)
+Recommends:     libX11.so.6()(64bit)
+Recommends:     libX11-xcb.so.1()(64bit)
+Recommends:     libXcursor.so.1()(64bit)
+Recommends:     libXrandr.so.2()(64bit)
+Recommends:     libXi.so.6()(64bit)
+Recommends:     xdg-desktop-portal
+
+%description
+Renders Markdown with LaTeX math and diagrams to PDF, offline, in a single
+binary. `docm FILE` opens a live preview window; `docm r FILE` renders
+without a display.
+
+%install
+mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/share/doc
+install -m 0755 @STAGE@/bin/docm %{buildroot}/usr/bin/docm
+cp -R @STAGE@/share/doc/docm %{buildroot}/usr/share/doc/docm
+
+%files
+/usr/bin/docm
+%doc /usr/share/doc/docm
