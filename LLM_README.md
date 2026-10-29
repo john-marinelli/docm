@@ -136,6 +136,8 @@ Non-fatal problems are located like errors and never fail a render. `docm r` pri
 | `cargo test` | Config, converter, rendering, error location and CLI tests |
 | `cargo run --example pages -- notes.md /tmp/page` | Write each page as a PNG (for inspecting output) |
 | `cargo run --example typst -- in.typ out.pdf` | Compile raw Typst in docm's sandboxed world |
+| `cargo dist` | Build this host's release artifacts into `dist/` |
+| `cargo bump …`, `cargo tag-release` | Release helpers (see [CI and releases](#ci-and-releases)) |
 
 - **Toolchain:** pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
 - **Debug builds:** dependencies are optimized even here, because Typst's WASM plugin runtime (mitex, Graphviz) is very slow unoptimized.
@@ -179,14 +181,14 @@ Everything lives in `john-marinelli/docm`: source, workflows, GitHub Release ass
 
 One-time setup: the repository and its releases must be public, and **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests** must be enabled. PRs opened with `GITHUB_TOKEN` do not trigger CI on their own; the formula PR is checked by the release run that produced it.
 
-To release, set `[workspace.package] version` in [`Cargo.toml`](Cargo.toml), then:
+Releases use the cargo aliases in [`.cargo/config.toml`](.cargo/config.toml), implemented by the dependency-free [`xtask`](crates/xtask/src/main.rs) crate:
 
 ```sh
-cargo check                     # updates Cargo.lock
-git commit -am "chore: release $(scripts/version.sh)"
-git push origin main
-# after CI passes:
-git tag "v$(scripts/version.sh)" && git push origin "v$(scripts/version.sh)"
+cargo bump patch        # or minor / major / X.Y.Z: sets [workspace.package] version, updates Cargo.lock, commits "chore: release X.Y.Z"
+git push                # then wait for CI on main
+cargo tag-release       # creates and pushes the annotated vX.Y.Z tag, which starts the release workflow
 ```
+
+Both commands require a clean `main` that matches `origin/main`. They refuse if the version's tag already exists, and `bump` refuses a version that isn't newer. `cargo dist` runs [`scripts/package.sh`](scripts/package.sh), and `cargo xtask version` prints the version. Only `v`-prefixed tags start the release workflow.
 
 When the workflow finishes, review and merge the formula PR. If published assets are wrong, fix the code and cut a new patch release; published releases are never replaced.

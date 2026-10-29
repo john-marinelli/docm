@@ -15,7 +15,7 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "Packaging supports only macOS arm64 and Linux x64" >&2; exit 1 ;;
 esac
 
-cargo build --release --locked
+cargo build --release --locked --package docm
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p dist

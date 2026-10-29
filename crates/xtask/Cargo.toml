@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+description = "Release and packaging helpers for docm (cargo bump, cargo dist, cargo tag-release)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

@@ -1,0 +1,6 @@
+# Repository helpers; see `cargo xtask help`.
+[alias]
+xtask = "run --quiet --package xtask --"
+bump = "xtask bump"
+dist = "xtask dist"
+tag-release = "xtask tag-release"
